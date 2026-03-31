@@ -1,0 +1,46 @@
+-- Merging decision tree log ---
+manifest
+ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:1:1-20:12
+INJECTED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:1:1-20:12
+	package
+		INJECTED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml
+	xmlns:tools
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:2:3-49
+	xmlns:android
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:1:11-69
+uses-permission#android.permission.PACKAGE_USAGE_STATS
+ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:3:3-5:43
+	tools:ignore
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:5:5-40
+	android:name
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:4:5-58
+application
+ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:7:3-19:17
+service#expo.modules.voltshield.VoltShieldAccessibilityService
+ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:8:5-18:15
+	android:exported
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:11:7-30
+	android:permission
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:10:7-73
+	android:name
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:9:7-76
+intent-filter#action:name:android.accessibilityservice.AccessibilityService
+ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:12:7-14:23
+action#android.accessibilityservice.AccessibilityService
+ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:13:9-84
+	android:name
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:13:17-81
+meta-data#android.accessibilityservice
+ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:15:7-17:69
+	android:resource
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:17:9-66
+	android:name
+		ADDED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml:16:9-52
+uses-sdk
+INJECTED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml reason: use-sdk injection requested
+INJECTED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml
+INJECTED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml
+	android:targetSdkVersion
+		INJECTED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml
+	android:minSdkVersion
+		INJECTED from /Users/vasvalstan/Downloads/rn-tuts/test/modules/volt-shield/android/src/main/AndroidManifest.xml

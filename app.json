@@ -8,16 +8,35 @@
     "scheme": "test",
     "userInterfaceStyle": "automatic",
     "ios": {
-      "icon": "./assets/expo.icon"
+      "appleTeamId": "27W785VCL2",
+      "icon": "./assets/expo.icon",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Volt uses your camera to detect push-up and squat reps.",
+        "NSLocationWhenInUseUsageDescription": "Volt tracks your walk/run to verify distance and reward you with Unlock Minutes.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "Volt tracks your walk/run in the background so you keep earning even when the screen is off.",
+        "UIBackgroundModes": ["location"],
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "bundleIdentifier": "com.stanciuvalentin.test"
     },
     "android": {
+      "package": "com.stanciuvalentin.test",
       "adaptiveIcon": {
         "backgroundColor": "#E6F4FE",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.CAMERA",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.FOREGROUND_SERVICE",
+        "android.permission.FOREGROUND_SERVICE_LOCATION",
+        "android.permission.ACCESS_BACKGROUND_LOCATION"
+      ]
     },
     "web": {
       "output": "static",
@@ -34,11 +53,92 @@
             "imageWidth": 76
           }
         }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "16.0"
+          }
+        }
+      ],
+      [
+        "react-native-device-activity",
+        {
+          "appleTeamId": "27W785VCL2",
+          "appGroup": "group.com.volt.screentime"
+        }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Volt uses your camera to detect push-up and squat reps."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "Volt tracks your walk/run in the background so you keep earning even when the screen is off.",
+          "locationWhenInUsePermission": "Volt tracks your walk/run to verify distance and reward you with Unlock Minutes.",
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
+        }
+      ],
+      [
+        "@rnmapbox/maps",
+        {
+          "RNMapboxMapsImpl": "mapbox"
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
-    }
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "build": {
+          "experimental": {
+            "ios": {
+              "appExtensions": [
+                {
+                  "bundleIdentifier": "com.stanciuvalentin.test.ShieldConfiguration",
+                  "targetName": "ShieldConfiguration",
+                  "entitlements": {
+                    "com.apple.developer.family-controls": true,
+                    "com.apple.security.application-groups": [
+                      "group.com.volt.screentime"
+                    ]
+                  }
+                },
+                {
+                  "bundleIdentifier": "com.stanciuvalentin.test.ShieldAction",
+                  "targetName": "ShieldAction",
+                  "entitlements": {
+                    "com.apple.developer.family-controls": true,
+                    "com.apple.security.application-groups": [
+                      "group.com.volt.screentime"
+                    ]
+                  }
+                },
+                {
+                  "bundleIdentifier": "com.stanciuvalentin.test.ActivityMonitorExtension",
+                  "targetName": "ActivityMonitorExtension",
+                  "entitlements": {
+                    "com.apple.developer.family-controls": true,
+                    "com.apple.security.application-groups": [
+                      "group.com.volt.screentime"
+                    ]
+                  }
+                }
+              ]
+            }
+          }
+        },
+        "projectId": "f4cdae21-62cf-4727-8458-2d42c9eabed6"
+      }
+    },
+    "owner": "stanciuvalentin"
   }
 }

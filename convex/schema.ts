@@ -1,0 +1,154 @@
+import { defineSchema, defineTable } from "convex/server";
+import { v } from "convex/values";
+import { authTables } from "@convex-dev/auth/server";
+
+export default defineSchema({
+  ...authTables,
+
+  profiles: defineTable({
+    userId: v.id("users"),
+    displayName: v.string(),
+    avatarUrl: v.optional(v.string()),
+    goal: v.optional(v.string()),
+    persona: v.optional(v.string()),
+    /** fitness only: "beginner" | "decent" — tailors training map + GPS milestones */
+    movementLevel: v.optional(v.string()),
+    difficultyLevel: v.optional(v.string()),
+    rank: v.string(),
+    totalDp: v.number(),
+    currentStreak: v.number(),
+    bestStreak: v.number(),
+    lastActivityDate: v.optional(v.string()),
+    freezesRemaining: v.number(),
+    /** UTC month key `YYYY-MM` when lazy passes were last refilled (monthly/yearly plans). */
+    freezesMonthKey: v.optional(v.string()),
+    minutesAvailable: v.number(),
+    onboardingComplete: v.boolean(),
+    /** Self-reported typical daily minutes on shielded / toxic apps (onboarding). */
+    baselineToxicMinutesPerDay: v.optional(v.number()),
+    /** Target % reduction (e.g. 20 = cut ~20% of baseline). */
+    scrollReductionGoalPercent: v.optional(v.number()),
+    /** "screen_time" if derived from real Screen Time / UsageStats data, "manual" if user-selected chip. */
+    baselineSource: v.optional(v.string()),
+    /** When baseline was last set (ms since epoch). */
+    baselineCapturedAt: v.optional(v.number()),
+    /** Coin balance for cosmetics and gifting. */
+    coinBalance: v.optional(v.number()),
+    /** Total unlock minutes ever credited (welcome bonus + activities). */
+    lifetimeMinutesEarned: v.optional(v.number()),
+    /** Total unlock minutes logged as spent (scroll budget used). */
+    lifetimeMinutesSpent: v.optional(v.number()),
+    /** Weekly league tier: "bronze" | "silver" | "gold" | "platinum" | "diamond" */
+    league: v.optional(v.string()),
+    /** ISO week string when user was last promoted/demoted. */
+    leaguePromotedAt: v.optional(v.string()),
+    /** Currently equipped mascot skin ID (e.g. "skin_flame"). */
+    equippedSkin: v.optional(v.string()),
+    /** Currently equipped shield theme ID. */
+    equippedShieldTheme: v.optional(v.string()),
+    /** Unique 6-char alphanumeric friend code for adding friends. */
+    friendCode: v.optional(v.string()),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_totalDp", ["totalDp"])
+    .index("by_friendCode", ["friendCode"]),
+
+  activities: defineTable({
+    userId: v.id("users"),
+    type: v.string(),
+    dpEarned: v.number(),
+    minutesEarned: v.number(),
+    metadata: v.optional(
+      v.object({
+        distance: v.optional(v.number()),
+        reps: v.optional(v.number()),
+        duration: v.optional(v.number()),
+      })
+    ),
+    verificationMethod: v.string(),
+    verified: v.boolean(),
+  }).index("by_userId", ["userId"]),
+
+  blockedApps: defineTable({
+    userId: v.id("users"),
+    appName: v.string(),
+    appIcon: v.string(),
+    appColor: v.string(),
+    isLocked: v.boolean(),
+  }).index("by_userId", ["userId"]),
+
+  mapProgress: defineTable({
+    userId: v.id("users"),
+    nodeId: v.number(),
+    status: v.string(),
+    completedAt: v.optional(v.number()),
+    label: v.optional(v.string()),
+    activityKeys: v.optional(v.array(v.string())),
+    dp: v.optional(v.number()),
+    nodeType: v.optional(v.string()),
+    desc: v.optional(v.string()),
+    section: v.optional(v.string()),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_userId_nodeId", ["userId", "nodeId"]),
+
+  friends: defineTable({
+    userId: v.id("users"),
+    friendId: v.id("users"),
+    status: v.string(),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_friendId", ["friendId"]),
+
+  weeklyScores: defineTable({
+    userId: v.id("users"),
+    weekStart: v.string(),
+    dp: v.number(),
+    division: v.number(),
+    league: v.optional(v.string()),
+  })
+    .index("by_week", ["weekStart"])
+    .index("by_userId_week", ["userId", "weekStart"]),
+
+  /** Per-user UTC-week aggregates for fuel economy tuning. */
+  weeklyFuelRollups: defineTable({
+    userId: v.id("users"),
+    weekStart: v.string(),
+    minutesEarned: v.number(),
+    minutesSpent: v.number(),
+    dpEarned: v.number(),
+  })
+    .index("by_userId_week", ["userId", "weekStart"])
+    .index("by_userId", ["userId"]),
+
+  storeItems: defineTable({
+    itemId: v.string(),
+    category: v.string(),
+    name: v.string(),
+    description: v.string(),
+    price: v.number(),
+    imageUrl: v.optional(v.string()),
+    isGiftable: v.boolean(),
+    isSelfPurchasable: v.boolean(),
+  }).index("by_itemId", ["itemId"]),
+
+  ownedItems: defineTable({
+    userId: v.id("users"),
+    itemId: v.string(),
+    acquiredAt: v.number(),
+    source: v.string(),
+  }).index("by_userId", ["userId"]),
+
+  gifts: defineTable({
+    fromUserId: v.id("users"),
+    toUserId: v.id("users"),
+    itemId: v.string(),
+    giftType: v.string(),
+    coinCost: v.number(),
+    message: v.optional(v.string()),
+    sentAt: v.number(),
+    claimed: v.boolean(),
+  })
+    .index("by_toUser", ["toUserId"])
+    .index("by_fromUser_date", ["fromUserId", "sentAt"]),
+});

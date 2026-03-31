@@ -1,0 +1,353 @@
+import { v } from "convex/values";
+import { mutation, query } from "./_generated/server";
+import { auth } from "./auth";
+
+function generateCode(): string {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  let code = "";
+  for (let i = 0; i < 6; i++) {
+    code += chars[Math.floor(Math.random() * chars.length)];
+  }
+  return code;
+}
+
+// ─── FRIEND CODE ─────────────────────────────────────
+
+export const getMyFriendCode = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) return null;
+
+    const profile = await ctx.db
+      .query("profiles")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+
+    return profile?.friendCode ?? null;
+  },
+});
+
+export const generateFriendCode = mutation({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    const profile = await ctx.db
+      .query("profiles")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+    if (!profile) throw new Error("Profile not found");
+
+    if (profile.friendCode) return profile.friendCode;
+
+    let code = generateCode();
+    let attempts = 0;
+    while (attempts < 10) {
+      const existing = await ctx.db
+        .query("profiles")
+        .withIndex("by_friendCode", (q) => q.eq("friendCode", code))
+        .unique();
+      if (!existing) break;
+      code = generateCode();
+      attempts++;
+    }
+
+    await ctx.db.patch(profile._id, { friendCode: code });
+    return code;
+  },
+});
+
+export const addFriendByCode = mutation({
+  args: { code: v.string() },
+  handler: async (ctx, args) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    const normalized = args.code.trim().toUpperCase();
+    if (normalized.length !== 6) throw new Error("Invalid friend code");
+
+    const friendProfile = await ctx.db
+      .query("profiles")
+      .withIndex("by_friendCode", (q) => q.eq("friendCode", normalized))
+      .unique();
+    if (!friendProfile) throw new Error("No user found with that code");
+    if (friendProfile.userId === userId)
+      throw new Error("That's your own code!");
+
+    const existing = await ctx.db
+      .query("friends")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+
+    if (existing.some((f) => f.friendId === friendProfile.userId)) {
+      throw new Error("You're already friends!");
+    }
+
+    await ctx.db.insert("friends", {
+      userId,
+      friendId: friendProfile.userId,
+      status: "accepted",
+    });
+    await ctx.db.insert("friends", {
+      userId: friendProfile.userId,
+      friendId: userId,
+      status: "accepted",
+    });
+
+    return { friendName: friendProfile.displayName };
+  },
+});
+
+// ─── FRIENDS LIST ────────────────────────────────────
+
+export const getFriends = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) return [];
+
+    const friendships = await ctx.db
+      .query("friends")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+
+    return await Promise.all(
+      friendships.map(async (f) => {
+        const friendProfile = await ctx.db
+          .query("profiles")
+          .withIndex("by_userId", (q) => q.eq("userId", f.friendId))
+          .unique();
+        return {
+          _id: f._id,
+          friendId: f.friendId,
+          status: f.status,
+          displayName: friendProfile?.displayName ?? "Unknown",
+          avatarUrl: friendProfile?.avatarUrl,
+          totalDp: friendProfile?.totalDp ?? 0,
+        };
+      })
+    );
+  },
+});
+
+export const getFriendRequests = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) return [];
+
+    const requests = await ctx.db
+      .query("friends")
+      .withIndex("by_friendId", (q) => q.eq("friendId", userId))
+      .collect();
+
+    const pending = requests.filter((r) => r.status === "pending");
+
+    return await Promise.all(
+      pending.map(async (r) => {
+        const profile = await ctx.db
+          .query("profiles")
+          .withIndex("by_userId", (q) => q.eq("userId", r.userId))
+          .unique();
+        return {
+          _id: r._id,
+          fromUserId: r.userId,
+          displayName: profile?.displayName ?? "Unknown",
+          avatarUrl: profile?.avatarUrl,
+        };
+      })
+    );
+  },
+});
+
+// ─── FRIEND MANAGEMENT ───────────────────────────────
+
+export const sendFriendRequest = mutation({
+  args: { friendId: v.id("users") },
+  handler: async (ctx, args) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+    if (userId === args.friendId) throw new Error("Cannot friend yourself");
+
+    const existing = await ctx.db
+      .query("friends")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+
+    if (existing.some((f) => f.friendId === args.friendId)) {
+      throw new Error("Friend request already exists");
+    }
+
+    await ctx.db.insert("friends", {
+      userId,
+      friendId: args.friendId,
+      status: "pending",
+    });
+  },
+});
+
+export const acceptFriend = mutation({
+  args: { requestId: v.id("friends") },
+  handler: async (ctx, args) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    const request = await ctx.db.get(args.requestId);
+    if (!request || request.friendId !== userId)
+      throw new Error("Request not found");
+
+    await ctx.db.patch(args.requestId, { status: "accepted" });
+
+    await ctx.db.insert("friends", {
+      userId,
+      friendId: request.userId,
+      status: "accepted",
+    });
+  },
+});
+
+export const rejectFriend = mutation({
+  args: { requestId: v.id("friends") },
+  handler: async (ctx, args) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    const request = await ctx.db.get(args.requestId);
+    if (!request || request.friendId !== userId)
+      throw new Error("Request not found");
+
+    await ctx.db.delete(args.requestId);
+  },
+});
+
+export const removeFriend = mutation({
+  args: { friendId: v.id("users") },
+  handler: async (ctx, args) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) throw new Error("Not authenticated");
+
+    const myRows = await ctx.db
+      .query("friends")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    for (const row of myRows) {
+      if (row.friendId === args.friendId) await ctx.db.delete(row._id);
+    }
+
+    const theirRows = await ctx.db
+      .query("friends")
+      .withIndex("by_userId", (q) => q.eq("userId", args.friendId))
+      .collect();
+    for (const row of theirRows) {
+      if (row.friendId === userId) await ctx.db.delete(row._id);
+    }
+  },
+});
+
+export const checkFriendship = query({
+  args: { otherUserId: v.id("users") },
+  handler: async (ctx, args) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) return "none";
+
+    const rows = await ctx.db
+      .query("friends")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+
+    const match = rows.find((r) => r.friendId === args.otherUserId);
+    if (!match) return "none";
+    return match.status as "accepted" | "pending";
+  },
+});
+
+// ─── ACTIVITY FEED ───────────────────────────────────
+
+export const getFriendActivity = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) return [];
+
+    const friendships = await ctx.db
+      .query("friends")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+
+    const acceptedFriends = friendships.filter((f) => f.status === "accepted");
+    if (acceptedFriends.length === 0) return [];
+
+    const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const feed: {
+      type: string;
+      userId: string;
+      name: string;
+      avatarUrl?: string;
+      text: string;
+      timestamp: number;
+    }[] = [];
+
+    for (const f of acceptedFriends.slice(0, 20)) {
+      const profile = await ctx.db
+        .query("profiles")
+        .withIndex("by_userId", (q) => q.eq("userId", f.friendId))
+        .unique();
+      if (!profile) continue;
+
+      const activities = await ctx.db
+        .query("activities")
+        .withIndex("by_userId", (q) => q.eq("userId", f.friendId))
+        .order("desc")
+        .take(5);
+
+      for (const a of activities) {
+        if (a._creationTime < oneDayAgo) continue;
+        feed.push({
+          type: "activity",
+          userId: f.friendId as string,
+          name: profile.displayName,
+          avatarUrl: profile.avatarUrl,
+          text: `completed ${a.type} (+${a.dpEarned} VP)`,
+          timestamp: a._creationTime,
+        });
+      }
+
+      if (profile.currentStreak >= 7 && profile.currentStreak % 7 === 0) {
+        feed.push({
+          type: "streak",
+          userId: f.friendId as string,
+          name: profile.displayName,
+          avatarUrl: profile.avatarUrl,
+          text: `reached Day ${profile.currentStreak} streak!`,
+          timestamp: Date.now(),
+        });
+      }
+    }
+
+    const recentGifts = await ctx.db
+      .query("gifts")
+      .withIndex("by_fromUser_date", (q) => q.eq("fromUserId", userId))
+      .collect()
+      .then((g) => g.filter((gift) => gift.sentAt >= oneDayAgo));
+
+    for (const gift of recentGifts.slice(0, 5)) {
+      const recipientProfile = await ctx.db
+        .query("profiles")
+        .withIndex("by_userId", (q) => q.eq("userId", gift.toUserId))
+        .unique();
+      feed.push({
+        type: "gift_sent",
+        userId: gift.toUserId as string,
+        name: "You",
+        avatarUrl: undefined,
+        text: `sent a gift to ${recipientProfile?.displayName ?? "a friend"}`,
+        timestamp: gift.sentAt,
+      });
+    }
+
+    feed.sort((a, b) => b.timestamp - a.timestamp);
+    return feed.slice(0, 10);
+  },
+});

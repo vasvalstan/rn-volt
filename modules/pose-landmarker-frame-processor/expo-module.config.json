@@ -1,0 +1,9 @@
+{
+  "platforms": ["apple", "android", "web"],
+  "apple": {
+    "modules": ["PoseLandmarkerFrameProcessorModule"]
+  },
+  "android": {
+    "modules": ["expo.modules.poselandmarkerframeprocessor.PoseLandmarkerFrameProcessorModule"]
+  }
+}
