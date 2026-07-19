@@ -9,7 +9,6 @@ import {
 } from "react-native";
 import { MaterialIcons } from "@react-native-vector-icons/material-icons";
 import * as Location from "expo-location";
-import { setAudioModeAsync, useAudioPlayer } from "expo-audio";
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
@@ -33,7 +32,7 @@ import { type EconomyProfile } from "../lib/economyEngine";
 import { CoinIcon } from "./CoinChip";
 import { computeActivityReward } from "../../shared/gamification";
 import {
-  evaluateGpsSample,
+  GpsDistanceTracker,
   type GpsSample,
 } from "../../shared/gpsTracking";
 
@@ -159,29 +158,16 @@ export default function CoinRunSession({ economyProfile, onCancel, onComplete }:
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeStartedAtRef = useRef<number | null>(null);
   const accumulatedElapsedMsRef = useRef(0);
-  const lastSample = useRef<GpsSample | null>(null);
+  const gpsTracker = useRef(new GpsDistanceTracker());
   const isPausedRef = useRef(false);
   const totalDistanceRef = useRef(0);
   const lastCheckpointCountRef = useRef(0);
   const trackingRequestRef = useRef(0);
   const onCancelRef = useRef(onCancel);
 
-  const coinPlayer = useAudioPlayer(require("../../assets/sounds/coin-collect.mp3"));
-
   useEffect(() => {
     onCancelRef.current = onCancel;
   }, [onCancel]);
-
-  useEffect(() => {
-    void setAudioModeAsync({ playsInSilentMode: true }).catch(() => {});
-  }, []);
-
-  const playCoinSound = useCallback(async () => {
-    try {
-      await coinPlayer.seekTo(0);
-      coinPlayer.play();
-    } catch {}
-  }, [coinPlayer]);
 
   const stopTracking = useCallback(() => {
     trackingRequestRef.current += 1;
@@ -262,7 +248,7 @@ export default function CoinRunSession({ economyProfile, onCancel, onComplete }:
     trackingRequestRef.current = requestId;
     isPausedRef.current = false;
     setIsPaused(false);
-    lastSample.current = null;
+    gpsTracker.current.reset();
     accumulatedElapsedMsRef.current = 0;
     activeStartedAtRef.current = Date.now();
     setElapsedSec(0);
@@ -284,12 +270,14 @@ export default function CoinRunSession({ economyProfile, onCancel, onComplete }:
             speed: loc.coords.speed,
             timestamp: loc.timestamp,
           };
-          const evaluation = evaluateGpsSample(lastSample.current, sample);
-          if (!evaluation.accepted) return;
+          const tracked = gpsTracker.current.add(sample);
+          if (!tracked.evaluation.accepted || !tracked.sample) return;
+          const evaluation = tracked.evaluation;
+          const smoothedSample = tracked.sample;
 
           setRouteCoords((prev) => [
             ...prev,
-            [sample.longitude, sample.latitude],
+            [smoothedSample.longitude, smoothedSample.latitude],
           ]);
 
           if (evaluation.distanceM > 0) {
@@ -332,11 +320,9 @@ export default function CoinRunSession({ economyProfile, onCancel, onComplete }:
                       : `${checkpoints * CHECKPOINT_INTERVAL_M}m`,
                   },
                 ]);
-                void playCoinSound();
               }
             }
           }
-          lastSample.current = sample;
         },
       );
       if (trackingRequestRef.current !== requestId) {
@@ -356,7 +342,7 @@ export default function CoinRunSession({ economyProfile, onCancel, onComplete }:
         );
       }
     }
-  }, [economyProfile, playCoinSound]);
+  }, [economyProfile]);
 
   const togglePause = useCallback(() => {
     const nextPaused = !isPausedRef.current;
@@ -367,7 +353,7 @@ export default function CoinRunSession({ economyProfile, onCancel, onComplete }:
       pauseElapsedClock();
     } else {
       activeStartedAtRef.current = Date.now();
-      lastSample.current = null;
+      gpsTracker.current.reset();
     }
   }, [pauseElapsedClock]);
 

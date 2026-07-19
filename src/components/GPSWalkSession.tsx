@@ -35,7 +35,7 @@ import {
   getCurrentRewards,
 } from "../lib/gpsSession";
 import {
-  evaluateGpsSample,
+  GpsDistanceTracker,
   type GpsSample,
 } from "../../shared/gpsTracking";
 
@@ -201,7 +201,7 @@ export default function GPSWalkSession({
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const activeStartedAtRef = useRef<number | null>(null);
   const accumulatedElapsedMsRef = useRef(0);
-  const lastSample = useRef<GpsSample | null>(null);
+  const gpsTracker = useRef(new GpsDistanceTracker());
   const isPausedRef = useRef(false);
   const totalDistanceRef = useRef(0);
   const lastMilestoneIndexRef = useRef(-1);
@@ -295,7 +295,7 @@ export default function GPSWalkSession({
     trackingRequestRef.current = requestId;
     isPausedRef.current = false;
     setIsPaused(false);
-    lastSample.current = null;
+    gpsTracker.current.reset();
     accumulatedElapsedMsRef.current = 0;
     activeStartedAtRef.current = Date.now();
     setElapsedSec(0);
@@ -323,12 +323,14 @@ export default function GPSWalkSession({
             speed: loc.coords.speed,
             timestamp: loc.timestamp,
           };
-          const evaluation = evaluateGpsSample(lastSample.current, sample);
-          if (!evaluation.accepted) return;
+          const tracked = gpsTracker.current.add(sample);
+          if (!tracked.evaluation.accepted || !tracked.sample) return;
+          const evaluation = tracked.evaluation;
+          const smoothedSample = tracked.sample;
 
           setRouteCoords((prev) => [
             ...prev,
-            [sample.longitude, sample.latitude],
+            [smoothedSample.longitude, smoothedSample.latitude],
           ]);
 
           if (evaluation.distanceM > 0) {
@@ -357,7 +359,6 @@ export default function GPSWalkSession({
                 }
               }
           }
-          lastSample.current = sample;
         },
       );
 
@@ -389,7 +390,7 @@ export default function GPSWalkSession({
       pauseElapsedClock();
     } else {
       activeStartedAtRef.current = Date.now();
-      lastSample.current = null;
+      gpsTracker.current.reset();
     }
   }, [pauseElapsedClock]);
 
