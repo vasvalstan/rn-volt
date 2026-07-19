@@ -4,7 +4,7 @@
 export const MAX_GPS_ACCURACY_METRES = 15;
 export const MAX_GPS_SPEED_METRES_PER_SECOND = 12;
 export const MAX_GPS_SEGMENT_METRES = 100;
-export const GPS_SMOOTHING_WINDOW_SIZE = 3;
+export const GPS_WARM_UP_SAMPLE_COUNT = 3;
 const MIN_GPS_CREDIT_SEGMENT_METRES = 8;
 
 export type GpsSample = {
@@ -134,25 +134,22 @@ export function evaluateGpsSample(
   return { accepted: true, distanceM };
 }
 
-function median(values: readonly number[]): number {
-  const sorted = [...values].sort((a, b) => a - b);
-  return sorted[Math.floor(sorted.length / 2)] ?? 0;
-}
-
 /**
- * Converts noisy raw location fixes into a conservative, rewarded route.
+ * Converts raw location fixes into a conservative, rewarded route.
  *
- * We wait for three good fixes, take the median latitude/longitude, and only
- * then evaluate the segment. A single GPS wobble can no longer add a coin's
- * worth of distance; sustained walking or running still accumulates normally.
+ * We wait for three good fixes before starting the route, then preserve the
+ * original points. That avoids cutting legitimate corners while the accuracy
+ * and minimum-segment checks keep a one-off GPS wobble from adding distance.
  */
 export class GpsDistanceTracker {
-  private recentSamples: GpsSample[] = [];
-  private lastSmoothedSample: GpsSample | null = null;
+  private goodSampleCount = 0;
+  private lastFixTimestamp: number | null = null;
+  private lastAcceptedSample: GpsSample | null = null;
 
   reset(): void {
-    this.recentSamples = [];
-    this.lastSmoothedSample = null;
+    this.goodSampleCount = 0;
+    this.lastFixTimestamp = null;
+    this.lastAcceptedSample = null;
   }
 
   add(next: GpsSample): { evaluation: GpsSampleEvaluation; sample: GpsSample | null } {
@@ -161,40 +158,33 @@ export class GpsDistanceTracker {
       return { evaluation: qualityEvaluation, sample: null };
     }
 
-    const latest = this.recentSamples.at(-1);
-    if (latest && next.timestamp - latest.timestamp > 10_000) {
-      // Do not smooth a new GPS fix together with a stale pre-pause fix.
-      this.recentSamples = [];
-      this.lastSmoothedSample = null;
+    if (this.lastFixTimestamp !== null && next.timestamp <= this.lastFixTimestamp) {
+      return {
+        evaluation: { accepted: false, distanceM: 0, reason: "stale-sample" },
+        sample: null,
+      };
     }
-
-    this.recentSamples = [...this.recentSamples, next].slice(-GPS_SMOOTHING_WINDOW_SIZE);
-    if (this.recentSamples.length < GPS_SMOOTHING_WINDOW_SIZE) {
+    if (
+      this.lastFixTimestamp !== null &&
+      next.timestamp - this.lastFixTimestamp > 10_000
+    ) {
+      // A long pause needs a fresh lock; do not bridge it with a GPS segment.
+      this.goodSampleCount = 0;
+      this.lastAcceptedSample = null;
+    }
+    this.lastFixTimestamp = next.timestamp;
+    this.goodSampleCount += 1;
+    if (this.goodSampleCount < GPS_WARM_UP_SAMPLE_COUNT) {
       return {
         evaluation: { accepted: false, distanceM: 0, reason: "warming-up" },
         sample: null,
       };
     }
 
-    const samples = this.recentSamples;
-    const smoothed: GpsSample = {
-      latitude: median(samples.map((sample) => sample.latitude)),
-      longitude: median(samples.map((sample) => sample.longitude)),
-      accuracy: median(samples.map(resolvedAccuracy)),
-      speed: median(
-        samples
-          .map((sample) => sample.speed)
-          .filter(
-            (speed): speed is number =>
-              typeof speed === "number" && Number.isFinite(speed) && speed >= 0,
-          ),
-      ),
-      timestamp: samples.at(-1)?.timestamp ?? next.timestamp,
-    };
-    const evaluation = evaluateGpsSample(this.lastSmoothedSample, smoothed);
+    const evaluation = evaluateGpsSample(this.lastAcceptedSample, next);
     if (evaluation.accepted) {
-      this.lastSmoothedSample = smoothed;
+      this.lastAcceptedSample = next;
     }
-    return { evaluation, sample: evaluation.accepted ? smoothed : null };
+    return { evaluation, sample: evaluation.accepted ? next : null };
   }
 }

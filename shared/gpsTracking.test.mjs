@@ -83,7 +83,7 @@ assert.deepEqual(tracker.add(locationAt(6, 5_000)).evaluation, {
   distanceM: 0,
 });
 
-// A single seven-metre GPS wobble is medianed out instead of being rewarded.
+// A single seven-metre GPS wobble is below the credit threshold.
 assert.equal(tracker.add(locationAt(13, 7_000)).evaluation.reason, "stationary-jitter");
 assert.equal(tracker.add(locationAt(6, 9_000)).evaluation.reason, "stationary-jitter");
 
