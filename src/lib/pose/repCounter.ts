@@ -262,7 +262,7 @@ function computePlankMetrics(landmarks: PoseLandmark[]): RepCounterMetrics {
 
   const avgElbow = average(elbowAngles);
 
-  const hasCore = (lS || rS) && (lH || rH);
+  const hasCore = Boolean((lS || rS) && (lH || rH));
 
   return {
     primaryAngle: avgElbow,
@@ -286,7 +286,7 @@ function computeWallSitMetrics(landmarks: PoseLandmark[]): RepCounterMetrics {
   if (rH && rK && rA) kneeAngles.push(angleAt(rH, rK, rA));
 
   const avgKnee = average(kneeAngles);
-  const hasUpper = (lS || rS) && (lH || rH);
+  const hasUpper = Boolean((lS || rS) && (lH || rH));
 
   return {
     primaryAngle: avgKnee,

@@ -1,11 +1,18 @@
-/** Push-up silhouette — plank position, arms extended, clean side-view. */
+/** Push-up silhouette — plank, arms extended, body diagonal, clean side view */
 export const HYE_ICON_PUSHUPS_XML =
-  '<svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">' +
-  '<circle cx="26" cy="10" r="3.2" fill="#1A1A1A"/>' +
-  '<path d="M23 12.5 L14 15 L4 15" stroke="#1A1A1A" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/>' +
-  '<path d="M22 13 L20 21" stroke="#1A1A1A" stroke-width="2.4" stroke-linecap="round"/>' +
-  '<path d="M18 14 L17 21" stroke="#1A1A1A" stroke-width="2.4" stroke-linecap="round"/>' +
-  '<path d="M7 15 L5 22" stroke="#1A1A1A" stroke-width="2.4" stroke-linecap="round"/>' +
-  '<path d="M10 15 L10 22" stroke="#1A1A1A" stroke-width="2.4" stroke-linecap="round"/>' +
-  '<line x1="3" y1="22" x2="22" y2="22" stroke="#1A1A1A" stroke-width="2" stroke-linecap="round"/>' +
-  "</svg>" as const;
+  `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" fill="none">` +
+  // Head
+  `<circle cx="26" cy="9" r="2.5" fill="#1A1A1A"/>` +
+  // Body diagonal (torso + hips as one line)
+  `<path d="M24 11 L10 20" stroke="#1A1A1A" stroke-width="2.2" stroke-linecap="round"/>` +
+  // Right arm (down to floor — front arm)
+  `<path d="M22 12.5 L22 20" stroke="#1A1A1A" stroke-width="2.2" stroke-linecap="round"/>` +
+  // Left arm (slightly behind)
+  `<path d="M18 15 L18 21" stroke="#1A1A1A" stroke-width="2.2" stroke-linecap="round"/>` +
+  // Legs (flat, extending back from hips)
+  `<path d="M10 20 L4 22" stroke="#1A1A1A" stroke-width="2.2" stroke-linecap="round"/>` +
+  // Feet
+  `<path d="M4 22 L4 24" stroke="#1A1A1A" stroke-width="2.2" stroke-linecap="round"/>` +
+  // Floor line for grounding
+  `<line x1="2" y1="24" x2="24" y2="24" stroke="#1A1A1A" stroke-width="1.4" stroke-linecap="round"/>` +
+  `</svg>`;

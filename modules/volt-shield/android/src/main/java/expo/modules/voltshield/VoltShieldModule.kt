@@ -14,6 +14,8 @@ import java.util.Calendar
 internal const val PREFS_NAME = "VoltShieldPrefs"
 internal const val BLOCKED_PACKAGES_KEY = "blockedPackages"
 internal const val FUEL_MINUTES_KEY = "fuelMinutesAvailable"
+internal const val SHIELD_ENABLED_KEY = "shieldEnabled"
+internal const val SHIELD_UNLOCK_UNTIL_KEY = "shieldUnlockUntil"
 
 private val SOCIAL_MEDIA_PACKAGES = setOf(
   "com.instagram.android",
@@ -90,6 +92,31 @@ class VoltShieldModule : Module() {
         .putInt(FUEL_MINUTES_KEY, minutes.coerceAtLeast(0))
         .apply()
       null
+    }
+
+    AsyncFunction("setShieldEnabled") { enabled: Boolean ->
+      val context = appContext.reactContext ?: return@AsyncFunction null
+      prefs(context).edit().putBoolean(SHIELD_ENABLED_KEY, enabled).apply()
+      null
+    }
+
+    AsyncFunction("setShieldUnlockUntil") { timestampMs: Double ->
+      val context = appContext.reactContext ?: return@AsyncFunction null
+      prefs(context)
+        .edit()
+        .putLong(SHIELD_UNLOCK_UNTIL_KEY, timestampMs.coerceAtLeast(0.0).toLong())
+        .apply()
+      null
+    }
+
+    AsyncFunction("getShieldRuntimeState") {
+      val context = appContext.reactContext
+        ?: return@AsyncFunction mapOf("enabled" to true, "unlockUntil" to 0.0)
+      val preferences = prefs(context)
+      mapOf(
+        "enabled" to preferences.getBoolean(SHIELD_ENABLED_KEY, true),
+        "unlockUntil" to preferences.getLong(SHIELD_UNLOCK_UNTIL_KEY, 0L).toDouble(),
+      )
     }
 
     AsyncFunction("getSocialMediaUsageMinutes") { days: Int ->

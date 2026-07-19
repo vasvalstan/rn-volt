@@ -17,11 +17,15 @@ import type * as fuelRollups from "../fuelRollups.js";
 import type * as gifts from "../gifts.js";
 import type * as http from "../http.js";
 import type * as leaderboard from "../leaderboard.js";
+import type * as leaderboardUtils from "../leaderboardUtils.js";
+import type * as openai from "../openai.js";
+import type * as sessions from "../sessions.js";
 import type * as social from "../social.js";
 import type * as store from "../store.js";
 import type * as streaks from "../streaks.js";
 import type * as training from "../training.js";
 import type * as users from "../users.js";
+import type * as voiceUsage from "../voiceUsage.js";
 
 import type {
   ApiFromModules,
@@ -39,11 +43,15 @@ declare const fullApi: ApiFromModules<{
   gifts: typeof gifts;
   http: typeof http;
   leaderboard: typeof leaderboard;
+  leaderboardUtils: typeof leaderboardUtils;
+  openai: typeof openai;
+  sessions: typeof sessions;
   social: typeof social;
   store: typeof store;
   streaks: typeof streaks;
   training: typeof training;
   users: typeof users;
+  voiceUsage: typeof voiceUsage;
 }>;
 
 /**

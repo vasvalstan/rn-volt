@@ -1,4 +1,4 @@
-import { Platform } from "react-native";
+import { Alert, Platform } from "react-native";
 import Purchases, {
   type PurchasesPackage,
   type CustomerInfo,
@@ -7,19 +7,36 @@ import Purchases, {
   PURCHASES_ERROR_CODE,
 } from "react-native-purchases";
 import RevenueCatUI, { PAYWALL_RESULT } from "react-native-purchases-ui";
+import type { BillingPeriod } from "./subscriptionPlans";
+
+export type { BillingPeriod } from "./subscriptionPlans";
 
 // ─── CONFIG ──────────────────────────────────────────
-const IOS_KEY = "test_UpIQJKQUbmdstACcNLYfbmYHnWc";
+const TEST_STORE_KEY = "test_UpIQJKQUbmdstACcNLYfbmYHnWc";
+/** Public SDK keys from RevenueCat → Project settings → API keys. */
+const IOS_PRODUCTION_KEY =
+  process.env.EXPO_PUBLIC_REVENUECAT_IOS_KEY?.trim() ?? "";
+const IOS_KEY = __DEV__ ? TEST_STORE_KEY : IOS_PRODUCTION_KEY;
 const ANDROID_KEY =
-  process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY ?? "";
+  process.env.EXPO_PUBLIC_REVENUECAT_ANDROID_KEY?.trim() ?? "";
 
 const API_KEY = Platform.select({
   ios: IOS_KEY,
   android: ANDROID_KEY,
 }) as string;
 
+export const REVENUECAT_NOT_CONFIGURED_MESSAGE =
+  Platform.OS === "android"
+    ? "Add your RevenueCat Google Play public API key to EXPO_PUBLIC_REVENUECAT_ANDROID_KEY in .env.local, then restart Metro (the iOS test key cannot be used on Android)."
+    : "Add your RevenueCat App Store public API key to EXPO_PUBLIC_REVENUECAT_IOS_KEY in the production build environment.";
+
 export const ENTITLEMENT_ID = "Volt Pro";
-const DISCOUNT_OFFERING_ID = "discount_yearly";
+
+/** Store product IDs — keep aligned with the products in the current RevenueCat offering. */
+export const STORE_PRODUCT_IDS = {
+  weekly: "weekly_1199",
+  monthly: "monthly_2399",
+} as const;
 
 let configured = false;
 
@@ -27,7 +44,13 @@ let configured = false;
 export function configureRevenueCat() {
   if (configured) return;
   if (!API_KEY) {
-    console.warn("[RC] No API key — skipping configure");
+    if (Platform.OS === "android") {
+      console.warn(
+        "[RC] Missing EXPO_PUBLIC_REVENUECAT_ANDROID_KEY — Purchases not configured; paywall and IAP will not work on Android."
+      );
+    } else {
+      console.warn("[RC] No API key — skipping configure");
+    }
     return;
   }
 
@@ -91,9 +114,12 @@ export function hasEntitlement(info: CustomerInfo): boolean {
   return info.entitlements.active[ENTITLEMENT_ID] !== undefined;
 }
 
-/** Billing cadence for streak-freeze (lazy pass) rules: weekly = none; monthly/yearly = 3 per calendar month. */
-export type BillingPeriod = "weekly" | "monthly" | "yearly";
+/** True when RevenueCat knows this customer has ever held the Volt Pro entitlement. */
+export function hasEntitlementHistory(info: CustomerInfo): boolean {
+  return info.entitlements.all[ENTITLEMENT_ID] !== undefined;
+}
 
+/** Billing cadence for streak protection: weekly = 1 pass; monthly/yearly = 3 passes. */
 function inferPeriodFromProductId(raw: string): BillingPeriod | null {
   const id = raw.toLowerCase();
   if (id.includes("year") || id.includes("annual")) return "yearly";
@@ -103,7 +129,7 @@ function inferPeriodFromProductId(raw: string): BillingPeriod | null {
 }
 
 /**
- * Best-effort from RevenueCat. Unknown SKUs default to `weekly` (0 lazy passes) so we never over-grant.
+ * Best-effort from RevenueCat. Unknown SKUs default to the lower weekly allowance.
  */
 export function getActiveBillingPeriod(info: CustomerInfo): BillingPeriod | null {
   if (!hasEntitlement(info)) return null;
@@ -133,17 +159,6 @@ export async function getOfferings(): Promise<PurchasesOffering | null> {
   }
 }
 
-export async function getDiscountOffering(): Promise<PurchasesOffering | null> {
-  if (!configured) return null;
-  try {
-    const offerings = await Purchases.getOfferings();
-    return offerings.all[DISCOUNT_OFFERING_ID] ?? null;
-  } catch (e) {
-    console.error("[RC] discount offering:", e);
-    return null;
-  }
-}
-
 // ─── PURCHASE ────────────────────────────────────────
 export type PurchaseResult = {
   success: boolean;
@@ -155,6 +170,12 @@ export type PurchaseResult = {
 export async function purchasePackage(
   pkg: PurchasesPackage
 ): Promise<PurchaseResult> {
+  if (!configured) {
+    return {
+      success: false,
+      error: REVENUECAT_NOT_CONFIGURED_MESSAGE,
+    };
+  }
   try {
     const { customerInfo } = await Purchases.purchasePackage(pkg);
     return { success: hasEntitlement(customerInfo), customerInfo };
@@ -169,6 +190,12 @@ export async function purchasePackage(
 }
 
 export async function restorePurchases(): Promise<PurchaseResult> {
+  if (!configured) {
+    return {
+      success: false,
+      error: REVENUECAT_NOT_CONFIGURED_MESSAGE,
+    };
+  }
   try {
     const customerInfo = await Purchases.restorePurchases();
     return { success: hasEntitlement(customerInfo), customerInfo };
@@ -181,6 +208,10 @@ export async function restorePurchases(): Promise<PurchaseResult> {
 export async function presentPaywall(options?: {
   offering?: PurchasesOffering;
 }): Promise<{ purchased: boolean; restored: boolean }> {
+  if (!configured) {
+    Alert.alert("Subscriptions unavailable", REVENUECAT_NOT_CONFIGURED_MESSAGE);
+    return { purchased: false, restored: false };
+  }
   try {
     const result = await RevenueCatUI.presentPaywall({
       displayCloseButton: true,
@@ -202,6 +233,9 @@ export async function presentPaywall(options?: {
 }
 
 export async function presentPaywallIfNeeded(): Promise<boolean> {
+  if (!configured) {
+    return false;
+  }
   try {
     const result = await RevenueCatUI.presentPaywallIfNeeded({
       requiredEntitlementIdentifier: ENTITLEMENT_ID,
@@ -218,6 +252,10 @@ export async function presentPaywallIfNeeded(): Promise<boolean> {
 
 // ─── CUSTOMER CENTER ─────────────────────────────────
 export async function presentCustomerCenter() {
+  if (!configured) {
+    Alert.alert("Subscriptions unavailable", REVENUECAT_NOT_CONFIGURED_MESSAGE);
+    return;
+  }
   try {
     await RevenueCatUI.presentCustomerCenter();
   } catch (e) {

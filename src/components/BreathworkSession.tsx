@@ -1,4 +1,4 @@
-import { MaterialIcons } from "@expo/vector-icons";
+import { MaterialIcons } from "@react-native-vector-icons/material-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import Animated, {
@@ -73,13 +73,19 @@ type Props = {
 function runPhaseAnimation(scale: SharedValue<number>, p: BreathPhase) {
   const ms = p.sec * 1000;
   if (p.kind === "inhale") {
-    scale.value = 0.86;
-    scale.value = withTiming(1.14, { duration: ms, easing: Easing.inOut(Easing.sin) });
+    scale.set(0.86);
+    scale.set(withTiming(1.14, { duration: ms, easing: Easing.inOut(Easing.sin) }));
   } else if (p.kind === "exhale") {
-    scale.value = 1.14;
-    scale.value = withTiming(0.86, { duration: ms, easing: Easing.inOut(Easing.sin) });
+    scale.set(1.14);
+    scale.set(withTiming(0.86, { duration: ms, easing: Easing.inOut(Easing.sin) }));
   }
   // "hold": keep scale; phase length is still enforced by outer setTimeout.
+}
+
+function formatClock(sec: number) {
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
 export default function BreathworkSession({
@@ -106,6 +112,8 @@ export default function BreathworkSession({
   const phaseTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const sessionEndRef = useRef(0);
   const phaseIndexRef = useRef(0);
+  const claimInFlightRef = useRef(false);
+  const [claimInFlight, setClaimInFlight] = useState(false);
 
   const scale = useSharedValue(1);
   const celebrate = useSharedValue(0);
@@ -120,12 +128,12 @@ export default function BreathworkSession({
   const finishSession = useCallback(() => {
     clearPhaseTimeout();
     setStep("done");
-    celebrate.value = 0;
-    celebrate.value = withSequence(
+    celebrate.set(0);
+    celebrate.set(withSequence(
       withTiming(1, { duration: 280, easing: Easing.out(Easing.back(1.8)) }),
       withTiming(0.92, { duration: 200 }),
       withTiming(1, { duration: 220 }),
-    );
+    ));
   }, [clearPhaseTimeout, celebrate]);
 
   const scheduleNextPhase = useCallback(
@@ -168,7 +176,7 @@ export default function BreathworkSession({
     setPhaseIndex(0);
     setStep("run");
     clearPhaseTimeout();
-    scale.value = 1;
+    scale.set(1);
     scheduleNextPhase(p, sessionEndRef.current);
   }, [patternId, durationMin, clearPhaseTimeout, scheduleNextPhase, scale]);
 
@@ -181,11 +189,11 @@ export default function BreathworkSession({
   }, [step]);
 
   const circleStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
+    transform: [{ scale: scale.get() }],
   }));
 
   const donePopStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: 1 + celebrate.value * 0.12 }],
+    transform: [{ scale: 1 + celebrate.get() * 0.12 }],
   }));
 
   const currentPhase = pattern.phases[phaseIndex] ?? pattern.phases[0];
@@ -195,15 +203,17 @@ export default function BreathworkSession({
     [durationMin, baseDp, baseMinutes, diffMultiplier],
   );
 
-  const formatClock = (sec: number) => {
-    const m = Math.floor(sec / 60);
-    const s = sec % 60;
-    return `${m}:${s.toString().padStart(2, "0")}`;
-  };
-
   const handleFinish = useCallback(async () => {
-    const { dp, minutes } = breathRewardsForDuration(durationMin, baseDp, baseMinutes, diffMultiplier);
-    await onComplete({ durationMin, patternId, dp, minutes });
+    if (claimInFlightRef.current) return;
+    claimInFlightRef.current = true;
+    setClaimInFlight(true);
+    try {
+      const { dp, minutes } = breathRewardsForDuration(durationMin, baseDp, baseMinutes, diffMultiplier);
+      await onComplete({ durationMin, patternId, dp, minutes });
+    } finally {
+      claimInFlightRef.current = false;
+      setClaimInFlight(false);
+    }
   }, [durationMin, patternId, baseDp, baseMinutes, diffMultiplier, onComplete]);
 
   return (
@@ -314,12 +324,15 @@ export default function BreathworkSession({
               </View>
             </View>
             <Pressable
-              style={styles.doneBtn}
+              style={[styles.doneBtn, claimInFlight && styles.doneBtnDisabled]}
               onPress={() => {
                 void handleFinish();
               }}
+              disabled={claimInFlight}
             >
-              <Text style={styles.doneBtnText}>Claim & continue</Text>
+              <Text style={styles.doneBtnText}>
+                {claimInFlight ? "Claiming..." : "Claim & continue"}
+              </Text>
             </Pressable>
           </View>
         ) : null}
@@ -521,6 +534,9 @@ const styles = StyleSheet.create({
     paddingVertical: 16,
     paddingHorizontal: 32,
     ...SH4,
+  },
+  doneBtnDisabled: {
+    opacity: 0.6,
   },
   doneBtnText: { fontSize: 13, fontWeight: "900", textTransform: "uppercase", color: C.black },
 });

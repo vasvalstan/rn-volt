@@ -3,7 +3,7 @@
  * Milestones are now dynamically built via economyEngine.buildPersonalizedMilestones.
  */
 
-import { buildPersonalizedMilestones, type EconomyProfile, type GpsMilestoneComputed } from "./economyEngine";
+import { buildPersonalizedMilestones, type EconomyProfile } from "./economyEngine";
 
 export type MovementLevelKey = "beginner" | "decent";
 

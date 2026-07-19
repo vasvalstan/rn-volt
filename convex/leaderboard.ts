@@ -23,6 +23,13 @@ function currentWeekStart(): string {
   return d.toISOString().split("T")[0];
 }
 
+function previousWeekStart(): string {
+  const previous = new Date();
+  previous.setUTCDate(previous.getUTCDate() - previous.getUTCDay() - 7);
+  previous.setUTCHours(0, 0, 0, 0);
+  return previous.toISOString().split("T")[0];
+}
+
 function nextSundayMidnightUTC(): number {
   const now = new Date();
   const daysUntilSunday = (7 - now.getUTCDay()) % 7 || 7;
@@ -34,18 +41,23 @@ function nextSundayMidnightUTC(): number {
 
 export const getWeeklyRankings = query({
   args: {
-    tab: v.optional(v.string()),
+    tab: v.optional(
+      v.union(
+        v.literal("league"),
+        v.literal("alltime"),
+        v.literal("friends"),
+      ),
+    ),
   },
   handler: async (ctx, args) => {
     const userId = await auth.getUserId(ctx);
-    const tab = (args.tab ?? "league") as "league" | "alltime" | "friends";
+    if (!userId) return [];
+    const tab = args.tab ?? "league";
 
-    const myProfile = userId
-      ? await ctx.db
-          .query("profiles")
-          .withIndex("by_userId", (q) => q.eq("userId", userId))
-          .unique()
-      : null;
+    const myProfile = await ctx.db
+      .query("profiles")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
 
     if (tab === "alltime") {
       const allProfiles = await ctx.db
@@ -75,8 +87,6 @@ export const getWeeklyRankings = query({
     }
 
     if (tab === "friends") {
-      if (!userId) return [];
-
       const friendships = await ctx.db
         .query("friends")
         .withIndex("by_userId", (q) => q.eq("userId", userId))
@@ -85,16 +95,22 @@ export const getWeeklyRankings = query({
         .filter((f) => f.status === "accepted")
         .map((f) => f.friendId);
 
-      const friendIdsIncludingSelf = new Set([userId, ...acceptedFriendIds]);
+      const friendIdsIncludingSelf = [userId, ...acceptedFriendIds].slice(0, 200);
       const weekStart = currentWeekStart();
 
-      const weekScores = await ctx.db
-        .query("weeklyScores")
-        .withIndex("by_week", (q) => q.eq("weekStart", weekStart))
-        .collect();
-
-      const friendScores = weekScores
-        .filter((s) => friendIdsIncludingSelf.has(s.userId))
+      const friendScores = (
+        await Promise.all(
+          friendIdsIncludingSelf.map((friendId) =>
+            ctx.db
+              .query("weeklyScores")
+              .withIndex("by_userId_week", (q) =>
+                q.eq("userId", friendId).eq("weekStart", weekStart),
+              )
+              .unique(),
+          ),
+        )
+      )
+        .filter((score) => score !== null)
         .sort((a, b) => b.dp - a.dp);
 
       return await Promise.all(
@@ -132,7 +148,7 @@ export const getWeeklyRankings = query({
     const weekScores = await ctx.db
       .query("weeklyScores")
       .withIndex("by_week", (q) => q.eq("weekStart", weekStart))
-      .collect();
+      .take(500);
 
     const leagueScores = weekScores.filter(
       (s) => (s.league ?? "bronze") === myLeague
@@ -189,7 +205,7 @@ export const getDivisionInfo = query({
     const weekScores = await ctx.db
       .query("weeklyScores")
       .withIndex("by_week", (q) => q.eq("weekStart", weekStart))
-      .collect();
+      .take(500);
 
     const leagueScores = weekScores
       .filter((s) => (s.league ?? "bronze") === myLeague)
@@ -197,6 +213,8 @@ export const getDivisionInfo = query({
 
     const userRank =
       leagueScores.findIndex((s) => s.userId === userId) + 1;
+    const userDp = leagueScores.find((score) => score.userId === userId)?.dp ?? 0;
+    const promotionDp = leagueScores.length >= 3 ? leagueScores[2].dp : 0;
 
     return {
       league: myLeague,
@@ -210,6 +228,9 @@ export const getDivisionInfo = query({
         userRank > 0 &&
         leagueScores.length > 4 &&
         userRank > leagueScores.length - 2,
+      userDp,
+      promotionDp,
+      dpToPromotion: Math.max(0, promotionDp - userDp + (promotionDp > userDp ? 1 : 0)),
       weekEndsAt: nextSundayMidnightUTC(),
     };
   },
@@ -218,7 +239,7 @@ export const getDivisionInfo = query({
 export const processWeeklyPromotions = internalMutation({
   args: {},
   handler: async (ctx) => {
-    const weekStart = currentWeekStart();
+    const weekStart = previousWeekStart();
 
     const weekScores = await ctx.db
       .query("weeklyScores")
@@ -245,6 +266,7 @@ export const processWeeklyPromotions = internalMutation({
             .withIndex("by_userId", (q) => q.eq("userId", score.userId))
             .unique();
           if (profile) {
+            if (profile.leaguePromotedAt === weekStart) continue;
             await ctx.db.patch(profile._id, {
               league: nextLeague,
               leaguePromotedAt: weekStart,
@@ -264,6 +286,7 @@ export const processWeeklyPromotions = internalMutation({
             .withIndex("by_userId", (q) => q.eq("userId", score.userId))
             .unique();
           if (profile) {
+            if (profile.leaguePromotedAt === weekStart) continue;
             await ctx.db.patch(profile._id, {
               league: prevLeague,
               leaguePromotedAt: weekStart,

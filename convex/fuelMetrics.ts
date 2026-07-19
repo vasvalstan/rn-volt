@@ -58,11 +58,11 @@ export const getWeeklyFuelHistory = query({
     const cap = Math.min(52, Math.max(1, args.limit ?? 8));
     const rows = await ctx.db
       .query("weeklyFuelRollups")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .withIndex("by_userId_week", (q) => q.eq("userId", userId))
+      .order("desc")
+      .take(cap);
 
-    rows.sort((a, b) => b.weekStart.localeCompare(a.weekStart));
-    return rows.slice(0, cap).map((r) => ({
+    return rows.map((r) => ({
       weekStart: r.weekStart,
       minutesEarned: r.minutesEarned,
       minutesSpent: r.minutesSpent,

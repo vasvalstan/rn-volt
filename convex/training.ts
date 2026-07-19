@@ -1,6 +1,8 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { auth } from "./auth";
+import { addWeeklyScore } from "./leaderboardUtils";
+import { dailyFuelBudget } from "../shared/gamification";
 
 type MapNodeDef = {
   label: string;
@@ -12,9 +14,6 @@ type MapNodeDef = {
 
 const EXPECTED_ACTIVITIES_PER_DAY = 4;
 const VP_PER_MINUTE_RATIO = 2.0;
-const DEFAULT_BASELINE = 60;
-const DEFAULT_REDUCTION = 20;
-
 const NODE_TYPE_VP_MULT: Record<string, number> = {
   regular: 1.0,
   rest: 0.5,
@@ -26,14 +25,17 @@ function computeNodeDpFromProfile(
   baseline: number | undefined,
   reduction: number | undefined,
   nodeType: string,
+  phaseMult = 1,
 ): number {
-  const b = baseline ?? DEFAULT_BASELINE;
-  const r = reduction ?? DEFAULT_REDUCTION;
-  const budget = Math.round(b * (1 - r / 100));
+  const budget = dailyFuelBudget({
+    baselineToxicMinutesPerDay: baseline ?? 60,
+    scrollReductionGoalPercent: reduction ?? 20,
+    difficulty: "balanced",
+  });
   const baseMins = Math.max(1, Math.round(budget / EXPECTED_ACTIVITIES_PER_DAY));
   const baseVp = Math.round(baseMins * VP_PER_MINUTE_RATIO);
   const mult = NODE_TYPE_VP_MULT[nodeType] ?? 1;
-  return Math.max(1, Math.round(baseVp * mult));
+  return Math.max(1, Math.round(baseVp * mult * phaseMult));
 }
 
 const PERSONA_MAPS: Record<string, MapNodeDef[]> = {
@@ -134,8 +136,11 @@ export const generateTrainingMap = mutation({
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .collect();
 
-    const alreadyPopulated = existing.some((n) => n.label);
-    if (alreadyPopulated) return;
+    // Existing accounts may already have the original 10-node map. Let the
+    // idempotent upsert below expand those accounts to the full 30-day path.
+    const alreadyHasThirtyDayMap =
+      existing.length >= 30 && existing.every((node) => Boolean(node.label));
+    if (alreadyHasThirtyDayMap) return;
 
     const profile = await ctx.db
       .query("profiles")
@@ -145,36 +150,43 @@ export const generateTrainingMap = mutation({
     const key = trainingMapKey(args.persona, args.movementLevel);
     const nodes = PERSONA_MAPS[key] ?? PERSONA_MAPS.discipline;
 
-    for (let i = 0; i < nodes.length; i++) {
+    const phases = ["Foundation", "Building", "Mastery"] as const;
+    for (let i = 0; i < nodes.length * phases.length; i++) {
       const nodeId = i + 1;
-      const def = nodes[i];
+      const phase = Math.floor(i / nodes.length);
+      const def = nodes[i % nodes.length];
       const dp = computeNodeDpFromProfile(
         profile?.baselineToxicMinutesPerDay,
         profile?.scrollReductionGoalPercent,
         def.nodeType,
+        [1, 1.3, 1.6][phase],
       );
       const existingNode = existing.find((n) => n.nodeId === nodeId);
+      const phaseLabel = phase === 0 ? def.label : `${phases[phase]}: ${def.label}`;
+      const phaseDesc = phase === 0 ? def.desc : `${phases[phase]} challenge: ${def.desc}`;
 
       if (existingNode) {
         await ctx.db.patch(existingNode._id, {
-          label: def.label,
+          label: phaseLabel,
           activityKeys: def.activityKeys,
+          completedActivityKeys: existingNode.completedActivityKeys ?? [],
           dp,
           nodeType: def.nodeType,
-          desc: def.desc,
-          section: "foundation",
+          desc: phaseDesc,
+          section: phases[phase].toLowerCase(),
         });
       } else {
         await ctx.db.insert("mapProgress", {
           userId,
           nodeId,
           status: nodeId === 1 ? "completed" : nodeId === 2 ? "current" : "locked",
-          label: def.label,
+          label: phaseLabel,
           activityKeys: def.activityKeys,
+          completedActivityKeys: [],
           dp,
           nodeType: def.nodeType,
-          desc: def.desc,
-          section: "foundation",
+          desc: phaseDesc,
+          section: phases[phase].toLowerCase(),
         });
       }
     }
@@ -186,7 +198,8 @@ const COIN_CHEST_MAX = 50;
 const COIN_BOSS = 25;
 
 function coinMultiplierFromBaseline(baseline: number | undefined): number {
-  return Math.max(0.5, (baseline ?? 60) / 60);
+  const bounded = Math.min(180, Math.max(1, baseline ?? 60));
+  return Math.max(0.5, bounded / 60);
 }
 
 function scaledCoin(base: number, baseline: number | undefined): number {
@@ -208,6 +221,9 @@ export const completeNode = mutation({
 
     if (!node) throw new Error("Node not found");
     if (node.status !== "current") throw new Error("Node is not current");
+    if ((node.activityKeys?.length ?? 0) > 0) {
+      throw new Error("Complete the required activities to finish this node");
+    }
 
     await ctx.db.patch(node._id, {
       status: "completed",
@@ -235,6 +251,9 @@ export const completeNode = mutation({
 
       if (Object.keys(updates).length > 0) {
         await ctx.db.patch(profile._id, updates);
+      }
+      if (node.dp) {
+        await addWeeklyScore(ctx, userId, node.dp, profile.league ?? "bronze");
       }
     }
 

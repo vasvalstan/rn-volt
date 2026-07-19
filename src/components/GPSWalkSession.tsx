@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState, useCallback } from "react";
+import React, { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import {
   View,
   Text,
@@ -7,7 +7,7 @@ import {
   Alert,
   Platform,
 } from "react-native";
-import { MaterialIcons } from "@expo/vector-icons";
+import { MaterialIcons } from "@react-native-vector-icons/material-icons";
 import * as Location from "expo-location";
 import Animated, {
   useSharedValue,
@@ -34,6 +34,10 @@ import {
   getNextMilestone,
   getCurrentRewards,
 } from "../lib/gpsSession";
+import {
+  evaluateGpsSample,
+  type GpsSample,
+} from "../../shared/gpsTracking";
 
 // ─── DESIGN TOKENS (from design.md) ─────────────────
 const C = {
@@ -75,24 +79,6 @@ const SH8 = {
   elevation: 8,
 } as const;
 
-// ─── GPS UTILITIES ───────────────────────────────────
-
-function haversineDistance(
-  lat1: number,
-  lon1: number,
-  lat2: number,
-  lon2: number,
-): number {
-  const R = 6371000;
-  const toRad = (deg: number) => (deg * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLon = toRad(lon2 - lon1);
-  const a =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
 function formatDistance(meters: number): string {
   if (meters < 1000) return `${Math.round(meters)}m`;
   return `${(meters / 1000).toFixed(2)}km`;
@@ -122,31 +108,37 @@ interface CoinPopup {
   minutes: number;
 }
 
-function CoinAnimation({ coin, onDone }: Readonly<{ coin: CoinPopup; onDone: () => void }>) {
+function CoinAnimation({
+  coin,
+  onDone,
+}: Readonly<{
+  coin: CoinPopup;
+  onDone: (id: string) => void;
+}>) {
   const translateY = useSharedValue(0);
   const scale = useSharedValue(0);
   const opacity = useSharedValue(1);
 
   useEffect(() => {
-    scale.value = withSequence(
+    scale.set(withSequence(
       withTiming(1.3, { duration: 200 }),
       withTiming(1, { duration: 150 }),
-    );
-    translateY.value = withSequence(
+    ));
+    translateY.set(withSequence(
       withTiming(-80, { duration: 600 }),
       withDelay(400, withTiming(-120, { duration: 400 })),
-    );
-    opacity.value = withDelay(
+    ));
+    opacity.set(withDelay(
       800,
       withTiming(0, { duration: 400 }),
-    );
-    const timer = setTimeout(onDone, 1300);
+    ));
+    const timer = setTimeout(() => onDone(coin.id), 1300);
     return () => clearTimeout(timer);
-  }, []);
+  }, [coin.id, onDone, opacity, scale, translateY]);
 
   const animStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: translateY.value }, { scale: scale.value }],
-    opacity: opacity.value,
+    transform: [{ translateY: translateY.get() }, { scale: scale.get() }],
+    opacity: opacity.get(),
   }));
 
   return (
@@ -202,101 +194,26 @@ export default function GPSWalkSession({
   const [totalDistance, setTotalDistance] = useState(0);
   const [elapsedSec, setElapsedSec] = useState(0);
   const [coins, setCoins] = useState<CoinPopup[]>([]);
-  const [lastMilestoneIndex, setLastMilestoneIndex] = useState(-1);
   const [isPaused, setIsPaused] = useState(false);
 
   const cameraRef = useRef<Camera>(null);
   const locationSub = useRef<Location.LocationSubscription | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const lastCoord = useRef<{ lat: number; lon: number } | null>(null);
+  const activeStartedAtRef = useRef<number | null>(null);
+  const accumulatedElapsedMsRef = useRef(0);
+  const lastSample = useRef<GpsSample | null>(null);
+  const isPausedRef = useRef(false);
+  const totalDistanceRef = useRef(0);
+  const lastMilestoneIndexRef = useRef(-1);
+  const trackingRequestRef = useRef(0);
+  const onCancelRef = useRef(onCancel);
 
-  // ─── PERMISSIONS ────────────────────────────────────
   useEffect(() => {
-    (async () => {
-      const { status: fg } = await Location.requestForegroundPermissionsAsync();
-      if (fg !== "granted") {
-        Alert.alert(
-          "Location Required",
-          "Volt needs location access to track your walk and reward you with Unlock Minutes.",
-          [{ text: "OK", onPress: onCancel }],
-        );
-        return;
-      }
-      setSessionState("ready");
-    })();
-    return () => stopTracking();
-  }, []);
-
-  // ─── TIMER ──────────────────────────────────────────
-  useEffect(() => {
-    if (sessionState === "tracking" && !isPaused) {
-      timerRef.current = setInterval(() => {
-        setElapsedSec((prev) => prev + 1);
-      }, 1000);
-    }
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [sessionState, isPaused]);
-
-  // ─── MILESTONE CHECKER ─────────────────────────────
-  useEffect(() => {
-    const reached = getReachedMilestones(totalDistance, milestones);
-    if (reached.length > 0 && reached.length - 1 > lastMilestoneIndex) {
-      const newMilestone = reached.at(-1);
-      if (!newMilestone) return;
-      setLastMilestoneIndex(reached.length - 1);
-      const coinId = `coin-${Date.now()}`;
-      setCoins((prev) => [
-        ...prev,
-        {
-          id: coinId,
-          label: newMilestone.label,
-          dp: newMilestone.dp,
-          minutes: newMilestone.minutes,
-        },
-      ]);
-    }
-  }, [totalDistance, lastMilestoneIndex, milestones]);
-
-  // ─── GPS TRACKING ──────────────────────────────────
-  const startTracking = useCallback(async () => {
-    setSessionState("tracking");
-
-    const sub = await Location.watchPositionAsync(
-      {
-        accuracy: Location.Accuracy.BestForNavigation,
-        timeInterval: 2000,
-        distanceInterval: 3,
-      },
-      (loc) => {
-        if (isPaused) return;
-
-        const { latitude, longitude } = loc.coords;
-        const newCoord: Position = [longitude, latitude];
-
-        setRouteCoords((prev) => [...prev, newCoord]);
-
-        if (lastCoord.current) {
-          const d = haversineDistance(
-            lastCoord.current.lat,
-            lastCoord.current.lon,
-            latitude,
-            longitude,
-          );
-          if (d > 1 && d < 100) {
-            setTotalDistance((prev) => prev + d);
-          }
-        }
-
-        lastCoord.current = { lat: latitude, lon: longitude };
-      },
-    );
-
-    locationSub.current = sub;
-  }, [isPaused]);
+    onCancelRef.current = onCancel;
+  }, [onCancel]);
 
   const stopTracking = useCallback(() => {
+    trackingRequestRef.current += 1;
     locationSub.current?.remove();
     locationSub.current = null;
     if (timerRef.current) {
@@ -305,19 +222,220 @@ export default function GPSWalkSession({
     }
   }, []);
 
-  const togglePause = useCallback(() => {
-    setIsPaused((prev) => !prev);
-    if (isPaused) {
-      setSessionState("tracking");
-    } else {
-      setSessionState("paused");
+  const syncElapsedClock = useCallback(() => {
+    const activeElapsedMs =
+      activeStartedAtRef.current === null
+        ? 0
+        : Math.max(0, Date.now() - activeStartedAtRef.current);
+    const nextElapsedSec = Math.floor(
+      (accumulatedElapsedMsRef.current + activeElapsedMs) / 1000,
+    );
+    setElapsedSec(nextElapsedSec);
+    return nextElapsedSec;
+  }, []);
+
+  const pauseElapsedClock = useCallback(() => {
+    if (activeStartedAtRef.current !== null) {
+      accumulatedElapsedMsRef.current += Math.max(
+        0,
+        Date.now() - activeStartedAtRef.current,
+      );
+      activeStartedAtRef.current = null;
     }
-  }, [isPaused]);
+    return syncElapsedClock();
+  }, [syncElapsedClock]);
+
+  // ─── PERMISSIONS ────────────────────────────────────
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { status: fg } = await Location.requestForegroundPermissionsAsync();
+        if (cancelled) return;
+        if (fg !== "granted") {
+          Alert.alert(
+            "Location Required",
+            "Volt needs location access to track your walk and reward you with Unlock Minutes.",
+            [{ text: "OK", onPress: () => onCancelRef.current() }],
+          );
+          return;
+        }
+        setSessionState("ready");
+      } catch {
+        if (cancelled) return;
+        Alert.alert(
+          "Location Unavailable",
+          "Volt could not check location access. Check Location Services and try again.",
+          [{ text: "OK", onPress: () => onCancelRef.current() }],
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+      stopTracking();
+    };
+  }, [stopTracking]);
+
+  // ─── TIMER ──────────────────────────────────────────
+  useEffect(() => {
+    if (sessionState === "tracking" && !isPaused) {
+      timerRef.current = setInterval(syncElapsedClock, 1000);
+    }
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [isPaused, sessionState, syncElapsedClock]);
+
+  // ─── GPS TRACKING ──────────────────────────────────
+  const startTracking = useCallback(async () => {
+    const requestId = trackingRequestRef.current + 1;
+    trackingRequestRef.current = requestId;
+    isPausedRef.current = false;
+    setIsPaused(false);
+    lastSample.current = null;
+    accumulatedElapsedMsRef.current = 0;
+    activeStartedAtRef.current = Date.now();
+    setElapsedSec(0);
+    setSessionState("tracking");
+
+    try {
+      const sub = await Location.watchPositionAsync(
+        {
+          accuracy: Location.Accuracy.BestForNavigation,
+          timeInterval: 2000,
+          distanceInterval: 3,
+        },
+        (loc) => {
+          if (
+            trackingRequestRef.current !== requestId ||
+            isPausedRef.current
+          ) {
+            return;
+          }
+
+          const sample: GpsSample = {
+            latitude: loc.coords.latitude,
+            longitude: loc.coords.longitude,
+            accuracy: loc.coords.accuracy,
+            speed: loc.coords.speed,
+            timestamp: loc.timestamp,
+          };
+          const evaluation = evaluateGpsSample(lastSample.current, sample);
+          if (!evaluation.accepted) return;
+
+          setRouteCoords((prev) => [
+            ...prev,
+            [sample.longitude, sample.latitude],
+          ]);
+
+          if (evaluation.distanceM > 0) {
+              const nextDistance = totalDistanceRef.current + evaluation.distanceM;
+              totalDistanceRef.current = nextDistance;
+              setTotalDistance(nextDistance);
+
+              const reached = getReachedMilestones(nextDistance, milestones);
+              const nextMilestoneIndex = reached.length - 1;
+              if (
+                reached.length > 0 &&
+                nextMilestoneIndex > lastMilestoneIndexRef.current
+              ) {
+                const newMilestone = reached.at(-1);
+                if (newMilestone) {
+                  lastMilestoneIndexRef.current = nextMilestoneIndex;
+                  setCoins((prev) => [
+                    ...prev,
+                    {
+                      id: `coin-${Date.now()}`,
+                      label: newMilestone.label,
+                      dp: newMilestone.dp,
+                      minutes: newMilestone.minutes,
+                    },
+                  ]);
+                }
+              }
+          }
+          lastSample.current = sample;
+        },
+      );
+
+      if (trackingRequestRef.current !== requestId) {
+        sub.remove();
+        return;
+      }
+      locationSub.current = sub;
+    } catch {
+      if (trackingRequestRef.current === requestId) {
+        activeStartedAtRef.current = null;
+        accumulatedElapsedMsRef.current = 0;
+        setElapsedSec(0);
+        setSessionState("ready");
+        Alert.alert(
+          "GPS Unavailable",
+          "Volt could not start location tracking. Check location services and try again.",
+        );
+      }
+    }
+  }, [milestones]);
+
+  const togglePause = useCallback(() => {
+    const nextPaused = !isPausedRef.current;
+    isPausedRef.current = nextPaused;
+    setIsPaused(nextPaused);
+    setSessionState(nextPaused ? "paused" : "tracking");
+    if (nextPaused) {
+      pauseElapsedClock();
+    } else {
+      activeStartedAtRef.current = Date.now();
+      lastSample.current = null;
+    }
+  }, [pauseElapsedClock]);
+
+  const minimumDistanceM = milestones[0]?.distanceM ?? 100;
+  const canFinishForReward = totalDistance >= minimumDistanceM;
 
   const finishSession = useCallback(() => {
+    if (!canFinishForReward) {
+      Alert.alert(
+        "Keep moving",
+        `${formatDistance(minimumDistanceM - totalDistance)} to your first reward checkpoint.`,
+      );
+      return;
+    }
+    pauseElapsedClock();
     stopTracking();
     setSessionState("summary");
-  }, [stopTracking]);
+  }, [
+    canFinishForReward,
+    minimumDistanceM,
+    pauseElapsedClock,
+    stopTracking,
+    totalDistance,
+  ]);
+
+  const handleCancel = useCallback(() => {
+    if (sessionState !== "tracking" && sessionState !== "paused") {
+      onCancel();
+      return;
+    }
+    Alert.alert(
+      "End this session?",
+      "Your unclaimed distance will be discarded.",
+      [
+        { text: "Keep going", style: "cancel" },
+        {
+          text: "End session",
+          style: "destructive",
+          onPress: () => {
+            stopTracking();
+            onCancel();
+          },
+        },
+      ],
+    );
+  }, [onCancel, sessionState, stopTracking]);
 
   const confirmFinish = useCallback(() => {
     const rewards = getCurrentRewards(totalDistance, milestones);
@@ -335,22 +453,25 @@ export default function GPSWalkSession({
   }, []);
 
   // ─── ROUTE GEOJSON ─────────────────────────────────
-  const routeGeoJSON = {
-    type: "FeatureCollection" as const,
-    features:
-      routeCoords.length >= 2
-        ? [
-            {
-              type: "Feature" as const,
-              geometry: {
-                type: "LineString" as const,
-                coordinates: routeCoords,
+  const routeGeoJSON = useMemo(
+    () => ({
+      type: "FeatureCollection" as const,
+      features:
+        routeCoords.length >= 2
+          ? [
+              {
+                type: "Feature" as const,
+                geometry: {
+                  type: "LineString" as const,
+                  coordinates: routeCoords,
+                },
+                properties: {},
               },
-              properties: {},
-            },
-          ]
-        : [],
-  };
+            ]
+          : [],
+    }),
+    [routeCoords],
+  );
 
   const rewards = getCurrentRewards(totalDistance, milestones);
   const nextMilestone = getNextMilestone(totalDistance, milestones);
@@ -453,23 +574,32 @@ export default function GPSWalkSession({
       >
         <Camera
           ref={cameraRef}
-          followUserLocation={sessionState === "tracking" || sessionState === "ready"}
-          followUserMode={UserTrackingMode.FollowWithHeading}
+          followUserLocation={
+            Platform.OS !== "web" &&
+            (sessionState === "tracking" || sessionState === "ready")
+          }
+          followUserMode={
+            Platform.OS === "web"
+              ? undefined
+              : UserTrackingMode.FollowWithHeading
+          }
           followZoomLevel={16}
           followPitch={0}
         />
 
-        <LocationPuck
-          puckBearingEnabled
-          puckBearing="heading"
-          pulsing={{
-            isEnabled: true,
-            color: C.mint,
-            radius: 40,
-          }}
-        />
+        {Platform.OS !== "web" ? (
+          <LocationPuck
+            puckBearingEnabled
+            puckBearing="heading"
+            pulsing={{
+              isEnabled: true,
+              color: C.mint,
+              radius: 40,
+            }}
+          />
+        ) : null}
 
-        {routeCoords.length >= 2 && (
+        {Platform.OS !== "web" && routeCoords.length >= 2 ? (
           <ShapeSource id="route-source" shape={routeGeoJSON}>
             {/* Route casing (black outline) */}
             <LineLayer
@@ -492,7 +622,7 @@ export default function GPSWalkSession({
               }}
             />
           </ShapeSource>
-        )}
+        ) : null}
       </MapView>
 
       {/* ─── COIN POPUPS ──────────────────────────── */}
@@ -501,14 +631,14 @@ export default function GPSWalkSession({
           <CoinAnimation
             key={coin.id}
             coin={coin}
-            onDone={() => removeCoin(coin.id)}
+            onDone={removeCoin}
           />
         ))}
       </View>
 
       {/* ─── TOP BAR ──────────────────────────────── */}
       <View style={s.topBar}>
-        <Pressable style={s.backBtn} onPress={onCancel}>
+        <Pressable style={s.backBtn} onPress={handleCancel}>
           <MaterialIcons name="arrow-back" size={22} color={C.black} />
         </Pressable>
 
@@ -592,11 +722,25 @@ export default function GPSWalkSession({
                 color={C.black}
               />
             </Pressable>
-            <Pressable style={s.finishBtn} onPress={finishSession}>
+            <Pressable
+              style={[s.finishBtn, !canFinishForReward ? s.controlDisabled : undefined]}
+              onPress={finishSession}
+              accessibilityRole="button"
+              accessibilityLabel={
+                canFinishForReward
+                  ? "Finish walk or run"
+                  : `${Math.ceil(minimumDistanceM - totalDistance)} metres to first reward`
+              }
+            >
               <MaterialIcons name="stop" size={28} color={C.white} />
             </Pressable>
           </View>
         )}
+        {(sessionState === "tracking" || sessionState === "paused") && !canFinishForReward ? (
+          <Text style={s.minimumDistanceHint}>
+            {Math.ceil(minimumDistanceM - totalDistance)}m TO FIRST REWARD
+          </Text>
+        ) : null}
       </View>
     </View>
   );
@@ -854,6 +998,14 @@ const s = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
     ...SH4,
+  },
+  controlDisabled: { opacity: 0.55 },
+  minimumDistanceHint: {
+    marginTop: 10,
+    color: C.black,
+    fontSize: 11,
+    fontWeight: "900",
+    textAlign: "center",
   },
 
   // Coin popups

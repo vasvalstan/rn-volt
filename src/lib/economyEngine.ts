@@ -4,6 +4,7 @@
  *
  * All reward values flow from a single anchor: the user's daily fuel budget.
  */
+import { computeActivityReward as computeServerActivityReward } from "../../shared/gamification";
 
 // ─── TYPES ───────────────────────────────────────────
 
@@ -190,16 +191,14 @@ export function buildPersonalizedMilestones(
         ? RUN_BEGINNER_DISTANCES
         : RUN_DECENT_DISTANCES;
 
-  const reward = computeReward(profile, "physical");
-  const maxDist = distances[distances.length - 1];
-
   return distances.map((d) => {
-    const frac = d / maxDist;
-    const scale = mode === "run_decent" ? 5 : 4;
+    const reward = computeServerActivityReward(profile, "run", {
+      distance: d,
+    });
     return {
       distanceM: d,
-      dp: Math.max(1, Math.round(reward.vp * scale * frac)),
-      minutes: Math.max(1, Math.round(reward.minutes * scale * frac)),
+      dp: reward.vp,
+      minutes: reward.minutes,
       label: distanceLabel(d),
     };
   });
@@ -236,7 +235,7 @@ export function coinRewardForActivity(
 /** Linear scaling: a 2h baseline user earns 2x coins vs a 1h user. Floor 0.5x. */
 export function coinMultiplier(profile: EconomyProfile): number {
   const baseline = profile.baselineToxicMinutesPerDay || DEFAULT_BASELINE_MINUTES;
-  return Math.max(0.5, baseline / 60);
+  return Math.max(0.5, Math.min(180, Math.max(1, baseline)) / 60);
 }
 
 export function scaledCoinReward(base: number, profile: EconomyProfile): number {

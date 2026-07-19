@@ -1,32 +1,20 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { View, Text, Pressable, StyleSheet, Alert, Linking } from "react-native";
-import { Image } from "expo-image";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { Alert, Linking, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import * as Location from "expo-location";
-import { MapView, Camera, UserTrackingMode, LocationPuck, MarkerView } from "@rnmapbox/maps";
-import { MaterialIcons } from "@expo/vector-icons";
-import Animated, {
-  useSharedValue,
-  useAnimatedStyle,
-  withRepeat,
-  withTiming,
-} from "react-native-reanimated";
+import { Camera, LocationPuck, MapView, MarkerView, UserTrackingMode } from "@rnmapbox/maps";
+import { MaterialIcons } from "@react-native-vector-icons/material-icons";
 import { VOLT_DOODLE_STYLE_URL } from "../lib/voltMapboxDoodleStyle";
 
 const C = {
   hotPink: "#FF2D78",
-  mint: "#00E5A0",
-  electricYellow: "#FFD60A",
+  cyan: "#00CEE5",
+  peach: "#FEB584",
+  electricYellow: "#EEF568",
+  purple: "#8A38F5",
+  amber: "#C77B00",
   black: "#1A1A1A",
   white: "#FFFFFF",
 };
-
-const SH4 = {
-  shadowColor: C.black,
-  shadowOffset: { width: 4, height: 4 },
-  shadowOpacity: 1,
-  shadowRadius: 0,
-  elevation: 4,
-} as const;
 
 const SH2 = {
   shadowColor: C.black,
@@ -36,141 +24,189 @@ const SH2 = {
   elevation: 2,
 } as const;
 
-/** Default map center (San Francisco) when location is off — same family as Mapbox demos. */
 const DEFAULT_CENTER: [number, number] = [-122.4194, 37.7749];
 
-/**
- * Offset [lng, lat] by `distanceM` meters at `bearingDeg` (0 = north, 90 = east).
- */
 function offsetMeters(lat: number, lng: number, distanceM: number, bearingDeg: number): [number, number] {
-  const brng = (bearingDeg * Math.PI) / 180;
-  const R = 6378137;
-  const lat1 = (lat * Math.PI) / 180;
-  const lng1 = (lng * Math.PI) / 180;
-  const angDist = distanceM / R;
-  const lat2 = Math.asin(
-    Math.sin(lat1) * Math.cos(angDist) + Math.cos(lat1) * Math.sin(angDist) * Math.cos(brng),
+  const bearing = (bearingDeg * Math.PI) / 180;
+  const radius = 6378137;
+  const latitude = (lat * Math.PI) / 180;
+  const longitude = (lng * Math.PI) / 180;
+  const angularDistance = distanceM / radius;
+  const nextLatitude = Math.asin(
+    Math.sin(latitude) * Math.cos(angularDistance) +
+      Math.cos(latitude) * Math.sin(angularDistance) * Math.cos(bearing),
   );
-  const lng2 =
-    lng1 +
-    Math.atan2(
-      Math.sin(brng) * Math.sin(angDist) * Math.cos(lat1),
-      Math.cos(angDist) - Math.sin(lat1) * Math.sin(lat2),
-    );
-  return [(lng2 * 180) / Math.PI, (lat2 * 180) / Math.PI];
+  const nextLongitude = longitude + Math.atan2(
+    Math.sin(bearing) * Math.sin(angularDistance) * Math.cos(latitude),
+    Math.cos(angularDistance) - Math.sin(latitude) * Math.sin(nextLatitude),
+  );
+  return [(nextLongitude * 180) / Math.PI, (nextLatitude * 180) / Math.PI];
 }
 
 export type SocialMapScreenProps = {
-  readonly headerLeft: ReactNode;
   readonly topInset: number;
   readonly bottomInset: number;
+  readonly vp: number;
+  readonly coins: number;
+  readonly streak: number;
   readonly onPressLeaderboard: () => void;
-  /** Avatar image URL (remote) or use a fallback from parent. */
-  readonly avatarUrl: string;
-  readonly speechText: string;
-  /** Find-friends card (or any footer); positioned above bottom nav. */
+  readonly onPressStore: () => void;
+  readonly onPressFriends: () => void;
+  /** Figma-style discovery/activity carousel rendered above the floating tab bar. */
   readonly footerCard: ReactNode;
 };
 
+function StatChip({
+  tone,
+  icon,
+  label,
+}: {
+  readonly tone: "cyan" | "peach" | "white";
+  readonly icon: "bolt" | "coin" | "streak";
+  readonly label: string;
+}) {
+  return (
+    <View
+      style={[
+        styles.statChip,
+        tone === "cyan" ? styles.statCyan : tone === "peach" ? styles.statPeach : styles.statWhite,
+      ]}
+    >
+      {icon === "coin" ? (
+        <Text style={styles.statEmoji}>🪙</Text>
+      ) : icon === "streak" ? (
+        <Text style={styles.statEmoji}>🧨</Text>
+      ) : (
+        <MaterialIcons name="bolt" size={22} color={C.electricYellow} />
+      )}
+      <Text style={styles.statText}>{label}</Text>
+    </View>
+  );
+}
+
+function RailButton({
+  icon,
+  color,
+  label,
+  onPress,
+}: {
+  readonly icon: "emoji-events" | "storefront" | "people" | "my-location";
+  readonly color: string;
+  readonly label: string;
+  readonly onPress: () => void;
+}) {
+  return (
+    <Pressable
+      style={styles.railButton}
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
+      <MaterialIcons name={icon} size={40} color={color} />
+    </Pressable>
+  );
+}
+
 /**
- * Social tab map: real GPS + Volt doodle-styled Mapbox, nearby DP coin markers, leaderboard switch.
- * Matches product-brainstorm “Social Map” (GPS social view, coins, find friends).
+ * Social tab composition from Figma node 169:2183, backed by the app's live
+ * Mapbox integration and its cartoon/doodle map style.
  */
 export default function SocialMapScreen({
-  headerLeft,
   topInset,
   bottomInset,
+  vp,
+  coins,
+  streak,
   onPressLeaderboard,
-  avatarUrl,
-  speechText,
+  onPressStore,
+  onPressFriends,
   footerCard,
 }: SocialMapScreenProps) {
-  const cameraRef = useRef<Camera>(null);
-
-  const bounce = useSharedValue(0);
-  useEffect(() => {
-    bounce.value = withRepeat(withTiming(-8, { duration: 750 }), -1, true);
-  }, [bounce]);
-
-  const bounceStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: bounce.value }],
-  }));
-
+  const footerBottom = Math.max(bottomInset, 12) + 108;
   const [locationGranted, setLocationGranted] = useState(false);
-  const [userCoord, setUserCoord] = useState<[number, number] | null>(null);
+  const [userCoordinate, setUserCoordinate] = useState<[number, number] | null>(null);
 
   useEffect(() => {
-    let sub: Location.LocationSubscription | null = null;
-    (async () => {
-      const { status } = await Location.getForegroundPermissionsAsync();
-      if (status !== "granted") return;
-      setLocationGranted(true);
-      const first = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
-      setUserCoord([first.coords.longitude, first.coords.latitude]);
-      sub = await Location.watchPositionAsync(
-        {
-          accuracy: Location.Accuracy.Balanced,
-          distanceInterval: 20,
-          timeInterval: 8000,
-        },
-        (loc) => {
-          setUserCoord([loc.coords.longitude, loc.coords.latitude]);
-        },
-      );
+    let cancelled = false;
+    let subscription: Location.LocationSubscription | null = null;
+    void (async () => {
+      try {
+        const existing = await Location.getForegroundPermissionsAsync();
+        if (cancelled) return;
+        const status = existing.status === "undetermined"
+          ? (await Location.requestForegroundPermissionsAsync()).status
+          : existing.status;
+        if (cancelled || status !== "granted") return;
+        setLocationGranted(true);
+        const first = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+        if (cancelled) return;
+        setUserCoordinate([first.coords.longitude, first.coords.latitude]);
+        const nextSubscription = await Location.watchPositionAsync(
+          { accuracy: Location.Accuracy.Balanced, distanceInterval: 20, timeInterval: 8000 },
+          (location) => {
+            if (!cancelled) {
+              setUserCoordinate([location.coords.longitude, location.coords.latitude]);
+            }
+          },
+        );
+        if (cancelled) {
+          nextSubscription.remove();
+          return;
+        }
+        subscription = nextSubscription;
+      } catch {
+        // The social map remains usable at its default center without location.
+      }
     })();
     return () => {
-      sub?.remove();
+      cancelled = true;
+      subscription?.remove();
     };
   }, []);
 
-  const mapCenter = userCoord ?? DEFAULT_CENTER;
-  const [lng, lat] = mapCenter;
-
-  const coinCoords = useMemo(() => {
-    const pairs: readonly [number, number][] = [
-      [25, 108],
-      [115, 125],
-      [205, 92],
-      [295, 118],
-    ];
-    return pairs.map(([bearingDeg, distanceM], i) => ({
-      id: `social-coin-${i}`,
-      coordinate: offsetMeters(lat, lng, distanceM, bearingDeg),
-    }));
-  }, [lat, lng]);
-
-  const handleMyLocation = useCallback(async () => {
+  const handleLocationPress = useCallback(async () => {
     try {
-      const { status: existing } = await Location.getForegroundPermissionsAsync();
-      if (existing !== "granted") {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== "granted") {
-          Alert.alert(
-            "Location needed",
-            "Allow location to see yourself on the Social Map and discover nearby coin drops.",
-            [
-              { text: "Not now", style: "cancel" },
-              { text: "Open Settings", onPress: () => void Linking.openSettings() },
-            ],
-          );
-          return;
-        }
+      let permission = await Location.getForegroundPermissionsAsync();
+      if (permission.status !== "granted" && permission.canAskAgain) {
+        permission = await Location.requestForegroundPermissionsAsync();
+      }
+      if (permission.status !== "granted") {
+        Alert.alert(
+          "Location needed",
+          "Enable location to center the Social map on you and place nearby coin markers correctly.",
+          [
+            { text: "Not now", style: "cancel" },
+            { text: "Open Settings", onPress: () => void Linking.openSettings() },
+          ],
+        );
+        return;
       }
       setLocationGranted(true);
-      const loc = await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.High });
-      const coord: [number, number] = [loc.coords.longitude, loc.coords.latitude];
-      setUserCoord(coord);
-      cameraRef.current?.setCamera({
-        centerCoordinate: coord,
-        zoomLevel: 15,
-        animationDuration: 800,
+      const current = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.High,
       });
+      setUserCoordinate([
+        current.coords.longitude,
+        current.coords.latitude,
+      ]);
     } catch {
-      Alert.alert("Location", "Could not read your position. Try again outdoors.");
+      Alert.alert(
+        "Location unavailable",
+        "Volt could not read your position. Try again with a clear view of the sky.",
+      );
     }
   }, []);
 
-  const footerBottom = Math.max(bottomInset, 12) + 108;
+  const center = userCoordinate ?? DEFAULT_CENTER;
+  const [longitude, latitude] = center;
+  const coinCoordinates = useMemo(
+    () => [
+      offsetMeters(latitude, longitude, 95, 340),
+      offsetMeters(latitude, longitude, 130, 110),
+      offsetMeters(latitude, longitude, 165, 205),
+    ],
+    [latitude, longitude],
+  );
 
   return (
     <View style={styles.root}>
@@ -183,57 +219,48 @@ export default function SocialMapScreen({
         scaleBarEnabled={false}
       >
         <Camera
-          ref={cameraRef}
-          defaultSettings={{
-            centerCoordinate: mapCenter,
-            zoomLevel: 15,
-          }}
-          followUserLocation={locationGranted}
-          followUserMode={UserTrackingMode.Follow}
+          defaultSettings={{ centerCoordinate: center, zoomLevel: 15 }}
+          followUserLocation={Platform.OS !== "web" && locationGranted}
+          followUserMode={
+            Platform.OS === "web" ? undefined : UserTrackingMode.Follow
+          }
           followZoomLevel={15}
           followPitch={0}
         />
-        {locationGranted ? (
+        {Platform.OS !== "web" && locationGranted ? (
           <LocationPuck
             puckBearingEnabled
             puckBearing="heading"
-            pulsing={{ isEnabled: true, color: C.mint, radius: 42 }}
+            pulsing={{ isEnabled: true, color: C.cyan, radius: 42 }}
           />
         ) : null}
-        {coinCoords.map((c) => (
-          <MarkerView
-            key={c.id}
-            coordinate={c.coordinate}
-            allowOverlap
-            allowOverlapWithPuck
-          >
-            <Animated.View style={[styles.coinMarker, bounceStyle]}>
-              <MaterialIcons name="paid" size={20} color={C.black} />
-            </Animated.View>
+        {coinCoordinates.map((coordinate, index) => (
+          <MarkerView key={`social-coin-${index}`} coordinate={coordinate} allowOverlap allowOverlapWithPuck>
+            <View style={styles.coinMarker}>
+              <MaterialIcons name="bolt" size={24} color={C.electricYellow} />
+            </View>
           </MarkerView>
         ))}
       </MapView>
 
-      <View style={[styles.header, { paddingTop: topInset }]} pointerEvents="box-none">
-        {headerLeft}
-        <View style={styles.headerRight}>
-          <Pressable style={styles.iconBtn} onPress={onPressLeaderboard}>
-            <MaterialIcons name="emoji-events" size={22} color={C.black} />
-          </Pressable>
-          <Pressable style={styles.iconBtn} onPress={() => void handleMyLocation()}>
-            <MaterialIcons name="my-location" size={22} color={C.hotPink} />
-          </Pressable>
+      <View style={[styles.stats, { top: topInset + 4 }]} pointerEvents="box-none">
+        <View style={styles.statsLeft}>
+          <StatChip tone="cyan" icon="bolt" label={`${vp} VP`} />
+          <StatChip tone="peach" icon="coin" label={String(coins)} />
         </View>
+        <StatChip tone="white" icon="streak" label={`DAY ${streak}`} />
       </View>
 
-      <View style={styles.socialCenter} pointerEvents="box-none">
-        <View style={styles.speech}>
-          <Text style={styles.speechText}>{speechText}</Text>
-          <View style={styles.speechTriangle} />
-        </View>
-        <View style={styles.avatar}>
-          <Image source={avatarUrl} style={styles.avatarImg} contentFit="cover" />
-        </View>
+      <View style={[styles.rightRail, { top: topInset + 60 }]}>
+        <RailButton icon="emoji-events" color={C.purple} label="Open leaderboard" onPress={onPressLeaderboard} />
+        <RailButton icon="storefront" color={C.amber} label="Open rewards store" onPress={onPressStore} />
+        <RailButton icon="people" color={C.hotPink} label="Add and view friends" onPress={onPressFriends} />
+        <RailButton
+          icon="my-location"
+          color={locationGranted ? C.cyan : C.amber}
+          label="Center map on my location"
+          onPress={() => void handleLocationPress()}
+        />
       </View>
 
       <View style={[styles.footerSlot, { bottom: footerBottom }]} pointerEvents="box-none">
@@ -244,109 +271,58 @@ export default function SocialMapScreen({
 }
 
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: "#FFEAF2",
-  },
-  map: {
+  root: { flex: 1, backgroundColor: "#FFEAF2", overflow: "hidden" },
+  map: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0 },
+  stats: {
     position: "absolute",
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
-  },
-  header: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    paddingHorizontal: 24,
+    left: 24,
+    right: 24,
     zIndex: 10,
-  },
-  headerRight: {
-    gap: 8,
-  },
-  iconBtn: {
-    backgroundColor: C.white,
-    borderWidth: 2,
-    borderColor: C.black,
-    padding: 10,
-    borderRadius: 20,
-    ...SH4,
-  },
-  socialCenter: {
-    position: "absolute",
-    top: "40%",
-    left: 0,
-    right: 0,
+    flexDirection: "row",
     alignItems: "center",
-    zIndex: 6,
+    justifyContent: "space-between",
   },
-  speech: {
+  statsLeft: { flexDirection: "row", alignItems: "center", gap: 8 },
+  statChip: {
+    minHeight: 32,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 100,
+    ...SH2,
+  },
+  statCyan: { backgroundColor: C.cyan },
+  statPeach: { backgroundColor: C.peach },
+  statWhite: { backgroundColor: C.white },
+  statEmoji: { fontSize: 18, lineHeight: 22 },
+  statText: { fontSize: 12, lineHeight: 24, fontWeight: "900", color: C.black, textTransform: "uppercase" },
+  rightRail: { position: "absolute", right: 24, zIndex: 9, gap: 12 },
+  railButton: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
     backgroundColor: C.white,
     borderWidth: 2,
     borderColor: C.black,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    marginBottom: 8,
-    ...SH4,
-  },
-  speechText: {
-    fontSize: 11,
-    fontWeight: "900",
-    fontStyle: "italic",
-    textTransform: "uppercase",
-    color: C.black,
-  },
-  speechTriangle: {
-    position: "absolute",
-    bottom: -9,
-    left: "50%",
-    marginLeft: -8,
-    width: 16,
-    height: 16,
-    backgroundColor: C.white,
-    borderBottomWidth: 2,
-    borderRightWidth: 2,
-    borderColor: C.black,
-    transform: [{ rotate: "45deg" }],
-  },
-  avatar: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
-    backgroundColor: C.hotPink,
-    borderWidth: 4,
-    borderColor: C.black,
-    overflow: "hidden",
-    shadowColor: C.black,
-    shadowOffset: { width: 6, height: 6 },
-    shadowOpacity: 1,
-    shadowRadius: 0,
-    elevation: 6,
-  },
-  avatarImg: {
-    width: "100%",
-    height: "100%",
+    ...SH2,
   },
   coinMarker: {
     width: 36,
     height: 36,
     borderRadius: 18,
-    backgroundColor: C.electricYellow,
+    backgroundColor: C.cyan,
     borderWidth: 2,
     borderColor: C.black,
     alignItems: "center",
     justifyContent: "center",
     ...SH2,
   },
-  footerSlot: {
-    position: "absolute",
-    left: 24,
-    right: 24,
-    zIndex: 10,
-  },
+  footerSlot: { position: "absolute", left: 0, right: 0, zIndex: 10 },
 });

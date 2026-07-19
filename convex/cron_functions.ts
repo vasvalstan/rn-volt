@@ -60,7 +60,16 @@ export const checkAllStreaks = internalMutation({
       );
 
       if (diffDays > 1 && profile.currentStreak > 0) {
-        await ctx.db.patch(profile._id, { currentStreak: 0 });
+        if ((profile.freezesRemaining ?? 0) > 0) {
+          const yesterday = new Date(today);
+          yesterday.setUTCDate(today.getUTCDate() - 1);
+          await ctx.db.patch(profile._id, {
+            freezesRemaining: Math.max(0, (profile.freezesRemaining ?? 0) - 1),
+            lastActivityDate: yesterday.toISOString().split("T")[0],
+          });
+        } else {
+          await ctx.db.patch(profile._id, { currentStreak: 0 });
+        }
       }
     }
   },

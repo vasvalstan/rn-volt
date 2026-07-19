@@ -6,10 +6,20 @@ import { STORE_CATALOG } from "./store";
 const MAX_GIFTS_PER_DAY = 3;
 const MAX_COIN_PER_GIFT = 50;
 const COOLDOWN_SAME_PERSON_MS = 24 * 60 * 60 * 1000;
-const EXEMPT_FROM_CAP = new Set(["lazy_pass"]);
+const EXEMPT_FROM_CAP = new Set(["lazy_pass", "vp_bundle", "vp_bundle_100"]);
+const RANK_THRESHOLDS = [
+  ["legend", 10_000],
+  ["elite", 5_000],
+  ["warrior", 2_000],
+  ["disciplined", 500],
+] as const;
 
 function findCatalogItem(itemId: string) {
   return STORE_CATALOG.find((i) => i.itemId === itemId);
+}
+
+function rankForDp(totalDp: number): string {
+  return RANK_THRESHOLDS.find(([, threshold]) => totalDp >= threshold)?.[0] ?? "starter";
 }
 
 export const sendGift = mutation({
@@ -22,6 +32,19 @@ export const sendGift = mutation({
     const userId = await auth.getUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
     if (userId === args.toUserId) throw new Error("Cannot gift to yourself");
+    if (args.message && args.message.length > 280) {
+      throw new Error("Gift messages are limited to 280 characters");
+    }
+
+    const friendship = await ctx.db
+      .query("friends")
+      .withIndex("by_userId_friendId", (q) =>
+        q.eq("userId", userId).eq("friendId", args.toUserId),
+      )
+      .first();
+    if (friendship?.status !== "accepted") {
+      throw new Error("Gifts can only be sent to accepted friends");
+    }
 
     const item = findCatalogItem(args.itemId);
     if (!item) throw new Error("Item not found");
@@ -49,14 +72,16 @@ export const sendGift = mutation({
     const now = Date.now();
     const todayStart = new Date();
     todayStart.setUTCHours(0, 0, 0, 0);
+    const rollingWindowStart = now - COOLDOWN_SAME_PERSON_MS;
 
     const recentGifts = await ctx.db
       .query("gifts")
-      .withIndex("by_fromUser_date", (q) => q.eq("fromUserId", userId))
-      .collect()
-      .then((g) => g.filter((gift) => gift.sentAt >= todayStart.getTime()));
+      .withIndex("by_fromUser_date", (q) =>
+        q.eq("fromUserId", userId).gte("sentAt", rollingWindowStart),
+      )
+      .collect();
 
-    if (recentGifts.length >= MAX_GIFTS_PER_DAY)
+    if (recentGifts.filter((gift) => gift.sentAt >= todayStart.getTime()).length >= MAX_GIFTS_PER_DAY)
       throw new Error(`You can only send ${MAX_GIFTS_PER_DAY} gifts per day`);
 
     const lastToSamePerson = recentGifts
@@ -78,8 +103,11 @@ export const sendGift = mutation({
       });
     } else if (item.category === "vp") {
       giftType = "vp";
+      const vpAmount = item.itemId === "vp_bundle_100" ? 100 : 50;
+      const newTotalDp = recipientProfile.totalDp + vpAmount;
       await ctx.db.patch(recipientProfile._id, {
-        totalDp: recipientProfile.totalDp + 50,
+        totalDp: newTotalDp,
+        rank: rankForDp(newTotalDp),
       });
     } else if (item.category === "skin" || item.category === "shield_theme") {
       await ctx.db.insert("ownedItems", {
@@ -113,13 +141,14 @@ export const getReceivedGifts = query({
 
     const gifts = await ctx.db
       .query("gifts")
-      .withIndex("by_toUser", (q) => q.eq("toUserId", userId))
-      .collect();
-
-    const unclaimed = gifts.filter((g) => !g.claimed);
+      .withIndex("by_toUser_claimed", (q) =>
+        q.eq("toUserId", userId).eq("claimed", false),
+      )
+      .order("desc")
+      .take(50);
 
     return await Promise.all(
-      unclaimed.map(async (gift) => {
+      gifts.map(async (gift) => {
         const senderProfile = await ctx.db
           .query("profiles")
           .withIndex("by_userId", (q) => q.eq("userId", gift.fromUserId))
@@ -166,9 +195,10 @@ export const getSentGiftsToday = query({
 
     const gifts = await ctx.db
       .query("gifts")
-      .withIndex("by_fromUser_date", (q) => q.eq("fromUserId", userId))
-      .collect()
-      .then((g) => g.filter((gift) => gift.sentAt >= todayStart.getTime()));
+      .withIndex("by_fromUser_date", (q) =>
+        q.eq("fromUserId", userId).gte("sentAt", todayStart.getTime()),
+      )
+      .collect();
 
     return gifts.length;
   },

@@ -1,7 +1,16 @@
-import { MaterialIcons } from "@expo/vector-icons";
+import { MaterialIcons } from "@react-native-vector-icons/material-icons";
+import { Image } from "expo-image";
+import {
+  RecordingPresets,
+  setAudioModeAsync,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from "expo-audio";
+import * as FileSystem from "expo-file-system/legacy";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Pressable,
+  Platform,
   StyleSheet,
   Text,
   TextInput,
@@ -18,6 +27,7 @@ import Animated, {
 } from "react-native-reanimated";
 import Svg, { Circle as SvgCircle } from "react-native-svg";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { ensureRecordingPermissionAsync } from "../lib/audioPermissions";
 
 const C = {
   black: "#1A1A1A",
@@ -45,14 +55,39 @@ type ActivityLike = {
 
 type Reward = { minutes: number; vp: number; coins: number };
 
+export type GuidedActivityCompletion = {
+  note?: string;
+  transcript?: string;
+  summary?: string;
+  voiceUri?: string;
+};
+
 type Props = {
   readonly activity: ActivityLike;
   readonly reward: Reward;
   readonly onClose: () => void;
-  readonly onComplete: () => Promise<void>;
+  readonly onComplete: (completion?: GuidedActivityCompletion) => Promise<void>;
+  readonly onSummarizeVoiceNote?: (args: {
+    audioBase64: string;
+    mimeType: string;
+    typedNote?: string;
+  }) => Promise<{
+    transcript?: string;
+    summary?: string;
+    note?: string;
+  }>;
 };
 
 type SessionMode = "timer" | "focusdot" | "self-report" | "tap";
+const RECORDING_MIME_TYPE =
+  Platform.OS === "web" ? "audio/webm" : "audio/mp4";
+
+async function restorePlaybackAudioMode() {
+  await setAudioModeAsync({
+    allowsRecording: false,
+    playsInSilentMode: true,
+  });
+}
 
 function resolveMode(method: string, key: string): SessionMode {
   if (key === "focusdot") return "focusdot";
@@ -72,6 +107,7 @@ export default function GuidedActivitySession({
   reward,
   onClose,
   onComplete,
+  onSummarizeVoiceNote,
 }: Props) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
@@ -83,9 +119,17 @@ export default function GuidedActivitySession({
   );
   const [remaining, setRemaining] = useState(durationSec);
   const [completing, setCompleting] = useState(false);
+  const [summarizingVoice, setSummarizingVoice] = useState(false);
   const [noteText, setNoteText] = useState("");
+  const [voiceUri, setVoiceUri] = useState<string | undefined>();
+  const [voiceSummary, setVoiceSummary] = useState("");
+  const [voiceTranscript, setVoiceTranscript] = useState("");
+  const [voiceError, setVoiceError] = useState("");
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const endTimeRef = useRef(0);
+  const recordingActiveRef = useRef(false);
+  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(recorder);
 
   const isDone = remaining <= 0;
 
@@ -96,7 +140,25 @@ export default function GuidedActivitySession({
     }
   }, []);
 
-  useEffect(() => () => clearTimer(), [clearTimer]);
+  useEffect(
+    () => () => {
+      clearTimer();
+      const shouldStop = recordingActiveRef.current;
+      recordingActiveRef.current = false;
+      void (async () => {
+        try {
+          if (shouldStop) {
+            await recorder.stop();
+          }
+        } catch {
+          // The native recorder may already have been released during teardown.
+        } finally {
+          await restorePlaybackAudioMode().catch(() => {});
+        }
+      })();
+    },
+    [clearTimer, recorder],
+  );
 
   const startTimer = useCallback(() => {
     clearTimer();
@@ -114,25 +176,91 @@ export default function GuidedActivitySession({
     }, 250);
   }, [durationSec, clearTimer]);
 
+  const buildCompletion = useCallback(async (): Promise<GuidedActivityCompletion> => {
+    const completion: GuidedActivityCompletion = {
+      note: noteText.trim() || undefined,
+      voiceUri,
+      transcript: voiceTranscript.trim() || undefined,
+      summary: voiceSummary.trim() || undefined,
+    };
+
+    if (voiceUri && onSummarizeVoiceNote && !completion.transcript && !completion.summary) {
+      setSummarizingVoice(true);
+      try {
+        const audioBase64 = await FileSystem.readAsStringAsync(voiceUri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        const result = await onSummarizeVoiceNote({
+          audioBase64,
+          mimeType: RECORDING_MIME_TYPE,
+          typedNote: completion.note,
+        });
+        completion.transcript = result.transcript?.trim() || undefined;
+        completion.summary = result.summary?.trim() || undefined;
+        completion.note = result.note?.trim() || completion.note;
+        setVoiceTranscript(completion.transcript ?? "");
+        setVoiceSummary(completion.summary ?? "");
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Voice note summary failed.";
+        setVoiceError(message);
+      } finally {
+        setSummarizingVoice(false);
+      }
+    }
+
+    return completion;
+  }, [noteText, voiceUri, voiceTranscript, voiceSummary, onSummarizeVoiceNote]);
+
   const handleComplete = useCallback(async () => {
     if (completing) return;
     setCompleting(true);
     try {
-      await onComplete();
+      await onComplete(await buildCompletion());
     } finally {
       setCompleting(false);
     }
-  }, [onComplete, completing]);
+  }, [onComplete, completing, buildCompletion]);
 
   const handleTapComplete = useCallback(async () => {
     setStep("done");
     setCompleting(true);
     try {
-      await onComplete();
+      await onComplete(await buildCompletion());
     } finally {
       setCompleting(false);
     }
-  }, [onComplete]);
+  }, [onComplete, buildCompletion]);
+
+  const toggleRecording = useCallback(async () => {
+    setVoiceError("");
+    if (recorderState.isRecording || recordingActiveRef.current) {
+      try {
+        await recorder.stop();
+        recordingActiveRef.current = false;
+        setVoiceUri(recorder.uri ?? undefined);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "Could not stop the voice note.";
+        setVoiceError(message);
+      } finally {
+        await restorePlaybackAudioMode().catch(() => {});
+      }
+      return;
+    }
+
+    try {
+      await ensureRecordingPermissionAsync();
+      await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      await recorder.prepareToRecordAsync();
+      recorder.record();
+      recordingActiveRef.current = true;
+    } catch (error) {
+      recordingActiveRef.current = false;
+      await restorePlaybackAudioMode().catch(() => {});
+      const message = error instanceof Error ? error.message : "Microphone permission is needed for voice notes.";
+      setVoiceError(message);
+    }
+  }, [recorder, recorderState.isRecording]);
 
   const ringSize = Math.min(200, width * 0.48);
   const strokeW = 8;
@@ -194,10 +322,10 @@ export default function GuidedActivitySession({
     transform: [{ scale: celebScale.value }],
   }));
 
-  const showsInput = mode === "self-report" &&
-    (activity.key === "gratitude" || activity.key === "planday");
+  const showsInput = mode === "self-report";
+  const showsVoiceNote = mode === "self-report";
 
-  const rewardLine = `+${reward.minutes} min  +${reward.vp} VP  +${reward.coins} coins`;
+  const rewardLine = `+${reward.minutes} min  +${reward.vp} VP`;
 
   // ─── TAP MODE ────────────────────────────────────
   if (mode === "tap") {
@@ -237,9 +365,17 @@ export default function GuidedActivitySession({
           </Pressable>
         </View>
         <View style={styles.centerCol}>
-          <View style={[styles.bigIcon, { backgroundColor: activity.color }]}>
-            <MaterialIcons name={activity.icon as any} size={48} color={C.white} />
-          </View>
+          {activity.key === "stretch" ? (
+            <Image
+              source={{ uri: "https://media.giphy.com/media/l41YkxvU8c7J7Bba0/giphy.gif" }}
+              style={{ width: 160, height: 160, borderRadius: 20 }}
+              contentFit="cover"
+            />
+          ) : (
+            <View style={[styles.bigIcon, { backgroundColor: activity.color }]}>
+              <MaterialIcons name={activity.icon as any} size={48} color={C.white} />
+            </View>
+          )}
           <Text style={styles.title}>{activity.name}</Text>
           <Text style={styles.instructions}>{activity.instructions}</Text>
           <View style={styles.durationChip}>
@@ -272,13 +408,18 @@ export default function GuidedActivitySession({
           </Animated.View>
           <Text style={styles.doneTitle}>Nice work!</Text>
           <Text style={styles.doneReward}>{rewardLine}</Text>
+          {voiceSummary ? (
+            <Text style={styles.voiceSummaryText}>{voiceSummary}</Text>
+          ) : null}
         </View>
         <Pressable
           style={[styles.ctaBtn, completing && { opacity: 0.6 }]}
           onPress={handleComplete}
-          disabled={completing}
+          disabled={completing || summarizingVoice}
         >
-          <Text style={styles.ctaText}>{completing ? "Saving..." : "Claim Reward"}</Text>
+          <Text style={styles.ctaText}>
+            {summarizingVoice ? "Summarizing..." : completing ? "Saving..." : "Claim Reward"}
+          </Text>
         </Pressable>
       </View>
     );
@@ -306,6 +447,13 @@ export default function GuidedActivitySession({
           </>
         ) : mode === "timer" ? (
           <>
+            {activity.key === "stretch" && (
+              <Image
+                source={{ uri: "https://media.giphy.com/media/l41YkxvU8c7J7Bba0/giphy.gif" }}
+                style={{ width: 160, height: 160, borderRadius: 20, marginBottom: 8 }}
+                contentFit="cover"
+              />
+            )}
             <View style={{ width: ringSize, height: ringSize, alignItems: "center", justifyContent: "center" }}>
               <Svg width={ringSize} height={ringSize} style={StyleSheet.absoluteFill}>
                 <SvgCircle
@@ -342,13 +490,49 @@ export default function GuidedActivitySession({
               {showsInput && (
                 <TextInput
                   style={styles.noteInput}
-                  placeholder={activity.key === "gratitude" ? "I'm grateful for..." : "My top priority today..."}
+                  placeholder={
+                    activity.key === "gratitude"
+                      ? "I'm grateful for..."
+                      : activity.key === "planday"
+                        ? "My top priority today..."
+                        : "Add a quick note..."
+                  }
                   placeholderTextColor="#999"
                   multiline
                   value={noteText}
                   onChangeText={setNoteText}
                 />
               )}
+              {showsVoiceNote ? (
+                <View style={styles.voicePanel}>
+                  <Pressable
+                    style={[
+                      styles.voiceButton,
+                      recorderState.isRecording && styles.voiceButtonActive,
+                    ]}
+                    onPress={() => {
+                      void toggleRecording();
+                    }}
+                  >
+                    <MaterialIcons
+                      name={recorderState.isRecording ? "stop" : "mic"}
+                      size={18}
+                      color={C.white}
+                    />
+                    <Text style={styles.voiceButtonText}>
+                      {recorderState.isRecording ? "Stop voice note" : voiceUri ? "Record again" : "Voice note"}
+                    </Text>
+                  </Pressable>
+                  <Text style={styles.voiceHint}>
+                    {recorderState.isRecording
+                      ? `${Math.max(1, Math.round(recorderState.durationMillis / 1000))}s recording`
+                      : voiceUri
+                        ? "Voice note attached"
+                        : "Talk instead of typing"}
+                  </Text>
+                  {voiceError ? <Text style={styles.voiceError}>{voiceError}</Text> : null}
+                </View>
+              ) : null}
             </View>
             <View style={styles.selfReportTimerRow}>
               <MaterialIcons name="timer" size={16} color={isDone ? C.mint : C.mutedFg} />
@@ -557,6 +741,42 @@ const styles = StyleSheet.create({
     color: C.black,
     textAlignVertical: "top",
   },
+  voicePanel: {
+    width: "100%",
+    alignItems: "center",
+    gap: 6,
+  },
+  voiceButton: {
+    minHeight: 42,
+    borderRadius: 21,
+    paddingHorizontal: 16,
+    backgroundColor: C.purple,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    borderWidth: 2,
+    borderColor: C.black,
+  },
+  voiceButtonActive: {
+    backgroundColor: C.hotPink,
+  },
+  voiceButtonText: {
+    color: C.white,
+    fontSize: 13,
+    fontWeight: "900",
+  },
+  voiceHint: {
+    color: C.mutedFg,
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  voiceError: {
+    color: C.hotPink,
+    fontSize: 12,
+    fontWeight: "700",
+    textAlign: "center",
+  },
   selfReportTimerRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -589,5 +809,13 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: "700",
     color: C.mutedFg,
+  },
+  voiceSummaryText: {
+    maxWidth: 280,
+    color: C.black,
+    fontSize: 13,
+    fontWeight: "700",
+    lineHeight: 18,
+    textAlign: "center",
   },
 });

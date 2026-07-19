@@ -1,8 +1,8 @@
 import { Image } from "expo-image";
 import { StatusBar } from "expo-status-bar";
-import { MaterialIcons } from "@expo/vector-icons";
+import { MaterialIcons } from "@react-native-vector-icons/material-icons";
 import { DeviceActivitySelectionSheetView } from "react-native-device-activity";
-import { useEffect, useState, useCallback, useMemo, useRef, type ReactNode } from "react";
+import { useEffect, useState, useCallback, useMemo, useRef, type ComponentProps, type ReactNode } from "react";
 import {
   AppState,
   ActivityIndicator,
@@ -23,56 +23,83 @@ import {
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Animated, {
+  cancelAnimation,
   useAnimatedStyle,
   useSharedValue,
   withRepeat,
   withTiming,
 } from "react-native-reanimated";
 import Svg, { Path, Rect, Circle, SvgXml } from "react-native-svg";
-import { useConvexAuth, useQuery, useMutation } from "convex/react";
+import { useConvexAuth, useQuery, useMutation, useAction } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "../../convex/_generated/api";
 import BreathworkSession from "../components/BreathworkSession";
+import { CoinChip, CoinIcon, CoinPricePill } from "../components/CoinChip";
 import ExerciseCameraSession from "../components/ExerciseCameraSession";
 import GPSWalkSession from "../components/GPSWalkSession";
-import GuidedActivitySession from "../components/GuidedActivitySession";
+import GuidedActivitySession, {
+  type GuidedActivityCompletion,
+} from "../components/GuidedActivitySession";
+import ReflectiveCoachSession, {
+  type CoachTrigger,
+  type ReflectiveCoachCompletion,
+} from "../components/ReflectiveCoachSession";
 import SocialMapScreen from "../components/SocialMapScreen";
 import CoinRunSession from "../components/CoinRunSession";
 import {
   buildGpsSessionUI,
   type MovementLevelKey,
 } from "../lib/gpsSession";
-import { HYE_ICON_RUNNING_XML } from "../assets/hyeActivityIcons";
+import { HYE_ICON_WALK_XML } from "../assets/hyeIconWalk";
 import { HYE_ICON_PUSHUPS_XML } from "../assets/hyeIconPushups";
-
-const HYE_CARD_ICON_PUSHUP = require("../../assets/expo.icon/Assets/icon-pushup.png");
-const HYE_CARD_ICON_BREATHER = require("../../assets/expo.icon/Assets/icon-breather.png");
-import { WELCOME_PILL_BATTERY_XML, WELCOME_PILL_VP_XML } from "../assets/welcomePillIcons";
+import { HYE_ICON_JUMPING_JACKS_XML } from "../assets/hyeIconJumpingJacks";
 import VoltShieldModule from "../../modules/volt-shield";
 import {
   loginUser as rcLogin,
   getOfferings,
-  getDiscountOffering,
   purchasePackage,
   restorePurchases,
-  presentPaywall,
-  presentCustomerCenter,
   addCustomerInfoListener,
   hasEntitlement,
+  hasEntitlementHistory,
+  isConfigured,
   getActiveBillingPeriod,
+  STORE_PRODUCT_IDS,
   type PurchasesPackage,
   type BillingPeriod,
 } from "../lib/revenuecat";
-import { rankProgressInCurrentTier } from "../lib/rankProgress";
 import {
-  computeReward,
-  computeScaledReward,
+  PACKAGE_IDENTIFIER_BY_PERIOD,
+  type PurchasableBillingPeriod,
+} from "../lib/subscriptionPlans";
+import { RANK_THRESHOLDS, rankProgressInCurrentTier } from "../lib/rankProgress";
+import {
   dailyFuelBudget,
-  coinRewardForActivity,
-  scaledCoinRewardForActivity,
   type EconomyProfile,
-  type ActivityCategory as EconCategory,
 } from "../lib/economyEngine";
+import {
+  ACTIVITY_RULES,
+  DIFFICULTY_EFFORT_MULT,
+  computeActivityReward,
+} from "../../shared/gamification";
+
+const HYE_CARD_ICON_BREATHER = require("../../assets/expo.icon/Assets/icon-breather.png");
+const WELCOME_VP_ICON = require("../../assets/figma/welcome-vp.png");
+const WELCOME_STREAK_ICON = require("../../assets/figma/welcome-streak.png");
+const HYE_FLOW_SHIELD = require("../../assets/figma/hye-flow-shield.png");
+const HYE_FLOW_EARN = require("../../assets/figma/hye-flow-earn.png");
+const HYE_FLOW_REFUEL = require("../../assets/figma/hye-flow-refuel.png");
+const HYE_FLOW_SCROLL = require("../../assets/figma/hye-flow-scroll.png");
+const HYE_VP_ICON = require("../../assets/figma/hye-vp.png");
+const ONBOARDING_DIFFICULTY_MASCOT = require("../../assets/figma/welcome-mascot.png");
+const CURRENT_UTC_DAY_INDEX = Math.floor(Date.now() / 86_400_000);
+const TRAINING_MOTIVATION_LINES = [
+  "Keep pushing, you got this!",
+  "One node at a time. Let's go!",
+  "Your journey is looking great!",
+  "Stay focused, stay strong!",
+  "Every step counts. Crush it!",
+] as const;
 
 // Screen Time APIs (iOS only — graceful no-op on Android)
 const isIOS = Platform.OS === "ios";
@@ -91,12 +118,43 @@ if (isIOS) {
 const VAULT_SHIELD_UI = {
   title: "App Locked",
   subtitle:
-    "Fuel bank: {fuelMinutes} min · Open Volt to earn more, or log scroll time in Settings before you scroll.",
+    "{applicationOrDomainDisplayName} is shielded · Fuel bank: {fuelMinutes} min",
   primaryButtonLabel: "Open Volt",
   iconSystemName: "lock.shield.fill",
   titleColor: { red: 255, green: 255, blue: 255 },
   primaryButtonBackgroundColor: { red: 255, green: 56, blue: 96 },
 };
+
+const IOS_SHIELD_SELECTION_ID = "volt_vault_selection";
+const IOS_SHIELD_ACTIVITY_NAME = "volt_app_block";
+const IOS_USAGE_ACTIVITY_NAME = "volt_usage_track";
+const IOS_UNLOCK_ACTIVITY_NAME = "volt_unlock_window";
+const SHIELD_UNLOCK_PRESETS = [5, 15] as const;
+
+function iosScheduleComponents(date: Date) {
+  return {
+    year: date.getFullYear(),
+    month: date.getMonth() + 1,
+    day: date.getDate(),
+    hour: date.getHours(),
+    minute: date.getMinutes(),
+    second: date.getSeconds(),
+  };
+}
+
+function formatShieldCountdown(unlockUntil: number, now: number) {
+  const remainingSeconds = Math.max(0, Math.ceil((unlockUntil - now) / 1000));
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+  return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function localDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
 
 const { width: SW } = Dimensions.get("window");
 const NAV_INSET = Math.round(SW * 0.05);
@@ -116,14 +174,11 @@ type ScreenKey =
   | "splash"
   | "onboarding1"
   | "onboarding2"
-  | "onboardingScreenTime"
   | "onboarding3"
   | "onboarding4"
   | "onboarding5"
   | "onboarding6"
-  | "onboarding7"
   | "upgrade"
-  | "discountUpgrade"
   | "finalPaywall"
   | "welcome"
   | "howYouEarn"
@@ -131,6 +186,7 @@ type ScreenKey =
   | "yourPath"
   | "auth"
   | "today"
+  | "activities"
   | "learningCentre"
   | "train"
   | "social"
@@ -199,10 +255,11 @@ const LOCK_ICON_XML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="non
 const GIFT_ICON_XML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="8" width="18" height="4" rx="1" fill="white"/><rect x="5" y="12" width="14" height="9" rx="1" fill="white"/><rect x="11" y="7" width="2" height="14" fill="#1A1A1A"/><path d="M12 8C10 8 8.5 6 9.5 4.5C10.5 3 12 4 12 5V8Z" fill="white"/><path d="M12 8C14 8 15.5 6 14.5 4.5C13.5 3 12 4 12 5V8Z" fill="white"/></svg>`;
 
 const MAP_X_PATTERN = [0.40, 0.05, 0.65, 0.55, 0.20, 0.02, 0.72, 0.35, 0.80, 0.15];
+type MaterialIconName = ComponentProps<typeof MaterialIcons>["name"];
 
 type ActivityCategory = "physical" | "mindful" | "micro" | "anti-scroll";
 
-const CATEGORY_META: Record<ActivityCategory, { label: string; icon: keyof typeof MaterialIcons.glyphMap }> = {
+const CATEGORY_META: Record<ActivityCategory, { label: string; icon: MaterialIconName }> = {
   physical: { label: "Physical", icon: "fitness-center" },
   mindful: { label: "Mindful", icon: "spa" },
   micro: { label: "Daily Habits", icon: "wb-sunny" },
@@ -424,7 +481,7 @@ const ACTIVITIES = [
     icon: "directions-run" as const,
     name: "Jumping Jacks",
     effortLabel: "20 reps",
-    verify: "Camera",
+    verify: "Camera Verified",
     color: "#8DC2FF",
     bg: "#E0EFFF",
     dp: 25,
@@ -439,7 +496,7 @@ const ACTIVITIES = [
     icon: "airline-seat-flat" as const,
     name: "Plank",
     effortLabel: "20 sec",
-    verify: "Camera",
+    verify: "Camera Verified",
     color: C.indigo,
     bg: C.indigoLight,
     dp: 25,
@@ -454,7 +511,7 @@ const ACTIVITIES = [
     icon: "event-seat" as const,
     name: "Wall Sit",
     effortLabel: "20 sec",
-    verify: "Camera",
+    verify: "Camera Verified",
     color: C.orange,
     bg: C.orangeLight,
     dp: 25,
@@ -469,7 +526,7 @@ const ACTIVITIES = [
     icon: "airline-seat-flat-angled" as const,
     name: "Sit-ups",
     effortLabel: "15 reps",
-    verify: "Camera",
+    verify: "Camera Verified",
     color: C.lime,
     bg: C.limeLight,
     dp: 25,
@@ -684,17 +741,39 @@ const ACTIVITIES = [
     effortDurationSec: 300,
     instructions: "Turn on grayscale mode on your phone (Settings > Accessibility) and leave it for at least 5 minutes.",
   },
+  {
+    key: "scrollreset",
+    icon: "psychology" as const,
+    name: "Scroll Reset",
+    effortLabel: "1 min",
+    verify: "AI Coach",
+    color: C.hotPink,
+    bg: C.hotPinkLight,
+    limit: "3x Daily",
+    dp: 8,
+    minutes: 2,
+    verificationMethod: "self-report",
+    category: "anti-scroll" as ActivityCategory,
+    effortDurationSec: 60,
+    instructions: "Pause after heavy social use and talk through the urge before unlocking more time.",
+  },
 ];
 
 type ActivityItem = (typeof ACTIVITIES)[number];
-
-const FALLBACK_LB = [
-  { rank: 1, name: "Alex_Grind", title: "Discipline King", dp: "2,450", img: IMG.lb1 },
-  { rank: 2, name: "Jordan (You)", title: "Disciplined", dp: "1,820", img: IMG.avatar, you: true },
-  { rank: 3, name: "Sara_M", title: "Fast Walker", dp: "1,790", img: IMG.lb3 },
-  { rank: 4, name: "Mike_P", title: "Novice", dp: "1,200", img: IMG.lb4, dim: true },
-  { rank: 5, name: "Luna_99", title: "Novice", dp: "950", img: IMG.lb5, dim: true },
-];
+const REFLECTIVE_ACTIVITY_KEYS = new Set([
+  "gratitude",
+  "kindact",
+  "mindfulwalk",
+  "planday",
+  "phonebed",
+  "clean",
+  "instrument",
+  "study",
+  "read",
+  "cookmeal",
+  "grayscale",
+  "scrollreset",
+]);
 
 type MapNodeDef = {
   label: string;
@@ -803,10 +882,10 @@ type PersonaKey = "focus" | "fitness" | "discipline" | "calm";
 type DifficultyKey = "chill" | "balanced" | "beast";
 
 const PERSONAS: { key: PersonaKey; emoji: string; label: string; sub: string }[] = [
-  { key: "focus", emoji: "🛡️", label: "Stop Doomscrolling", sub: "I want my time back" },
-  { key: "fitness", emoji: "🏃", label: "Get Moving", sub: "Turn runs into rewards" },
-  { key: "discipline", emoji: "⚡", label: "Build Daily Discipline", sub: "Structure. Streaks. Systems." },
-  { key: "calm", emoji: "🧘", label: "Find My Calm", sub: "Less noise, more breathing room" },
+  { key: "focus", emoji: "🛡️", label: "Stop Doomscrolling", sub: "Less time scrolling, more real life" },
+  { key: "fitness", emoji: "🏃", label: "Get Moving", sub: "Turn activity into reward" },
+  { key: "discipline", emoji: "⚡", label: "Build daily discipline", sub: "Structure. Streaks. System" },
+  { key: "calm", emoji: "⚖️", label: "Find inner balance", sub: "Less noise, more breathing room" },
 ];
 
 const PERSONA_GOALS: Record<PersonaKey, { label: string; goals: string[] }> = {
@@ -824,7 +903,7 @@ const PERSONA_SPEECH: Record<PersonaKey, string> = {
 };
 
 const PERSONA_WELCOME_QUOTE: Record<PersonaKey, string> = {
-  focus: "Your screen. Your rules.",
+  focus: "Your screen. Your rules",
   fitness: "Every rep earns your freedom.",
   discipline: "Discipline is freedom.",
   calm: "Stillness is strength.",
@@ -843,11 +922,43 @@ const PERSONA_DIFFICULTY_DEFAULT: Record<PersonaKey, DifficultyKey> = {
   calm: "chill",
 };
 
-const DIFFICULTIES: { key: DifficultyKey; label: string; tag: string; desc: string; color: string }[] = [
-  { key: "chill", label: "Chill", tag: "Easy start", desc: "Tap-based tasks, breathing, relaxation", color: C.black },
-  { key: "balanced", label: "Balanced", tag: "Steady climbs", desc: "Mix of physical and mental activities", color: C.black },
-  { key: "beast", label: "Beast", tag: "No mercy", desc: "High intensity. Earn your scroll", color: C.black },
+const DIFFICULTIES: {
+  key: DifficultyKey;
+  label: string;
+  tag: string;
+  desc: string;
+  reductionPercent: 25 | 50 | 75;
+  comparisonHeight: 80 | 104 | 128;
+}[] = [
+  {
+    key: "chill",
+    label: "Chill",
+    tag: "Easy start",
+    desc: "Tap-based tasks, breathing, relaxation",
+    reductionPercent: 25,
+    comparisonHeight: 80,
+  },
+  {
+    key: "balanced",
+    label: "Balanced",
+    tag: "Steady climbs",
+    desc: "Mix of physical and mental activities",
+    reductionPercent: 50,
+    comparisonHeight: 104,
+  },
+  {
+    key: "beast",
+    label: "Beast",
+    tag: "No mercy",
+    desc: "High intensity. Earn your scroll",
+    reductionPercent: 75,
+    comparisonHeight: 128,
+  },
 ];
+
+function difficultyReductionPercent(value: DifficultyKey): 25 | 50 | 75 {
+  return DIFFICULTIES.find((item) => item.key === value)?.reductionPercent ?? 25;
+}
 
 /** Short science-informed tips for Today header (rotates by calendar day + persona). */
 const DAILY_ADVICE_POOL: Record<PersonaKey, string[]> = {
@@ -898,7 +1009,7 @@ type LearningCategoryDef = {
   readonly key: string;
   readonly title: string;
   readonly subtitle: string;
-  readonly icon: keyof typeof MaterialIcons.glyphMap;
+  readonly icon: MaterialIconName;
   readonly accent: string;
   readonly bullets: readonly string[];
 };
@@ -964,25 +1075,6 @@ const LEARNING_CATEGORIES: LearningCategoryDef[] = [
 
 
 
-const DAILY_LIMITS: Record<string, number> = {
-  breathe: 2,
-  gratitude: 1,
-  water: 4,
-  kindact: 2,
-  eyesclosed: 3,
-  planday: 1,
-  bodyscan: 2,
-  mindfulwalk: 2,
-  phonebed: 1,
-  clean: 2,
-  instrument: 2,
-  study: 2,
-  read: 2,
-  cookmeal: 1,
-  grayscale: 1,
-};
-
-
 const CAMERA_TARGET_REPS: Record<string, number> = {
   pushups: 10,
   squats: 15,
@@ -1019,59 +1111,16 @@ function snapToNearestChip(minutes: number): number {
   return best;
 }
 
-const SCROLL_GOAL_CHIPS: { label: string; percent: number }[] = [
-  { label: "−10%", percent: 10 },
-  { label: "−20%", percent: 20 },
-  { label: "−30%", percent: 30 },
-  { label: "−50%", percent: 50 },
-];
-
 const TRUST_ICON_LOCK_XML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M5.25 10.055V8C5.25 6.20979 5.96116 4.4929 7.22703 3.22703C8.4929 1.96116 10.2098 1.25 12 1.25C13.7902 1.25 15.5071 1.96116 16.773 3.22703C18.0388 4.4929 18.75 6.20979 18.75 8V10.055C19.865 10.138 20.59 10.348 21.121 10.879C22 11.757 22 13.172 22 16C22 18.828 22 20.243 21.121 21.121C20.243 22 18.828 22 16 22H8C5.172 22 3.757 22 2.879 21.121C2 20.243 2 18.828 2 16C2 13.172 2 11.757 2.879 10.879C3.409 10.348 4.135 10.138 5.25 10.055ZM6.75 8C6.75 6.60761 7.30312 5.27225 8.28769 4.28769C9.27225 3.30312 10.6076 2.75 12 2.75C13.3924 2.75 14.7277 3.30312 15.7123 4.28769C16.6969 5.27225 17.25 6.60761 17.25 8V10.004C16.8673 10.0007 16.4507 9.99933 16 10H8C7.54867 9.99933 7.132 10.0007 6.75 10.004V8ZM8 17C8.26522 17 8.51957 16.8946 8.70711 16.7071C8.89464 16.5196 9 16.2652 9 16C9 15.7348 8.89464 15.4804 8.70711 15.2929C8.51957 15.1054 8.26522 15 8 15C7.73478 15 7.48043 15.1054 7.29289 15.2929C7.10536 15.4804 7 15.7348 7 16C7 16.2652 7.10536 16.5196 7.29289 16.7071C7.48043 16.8946 7.73478 17 8 17ZM12 17C12.2652 17 12.5196 16.8946 12.7071 16.7071C12.8946 16.5196 13 16.2652 13 16C13 15.7348 12.8946 15.4804 12.7071 15.2929C12.5196 15.1054 12.2652 15 12 15C11.7348 15 11.4804 15.1054 11.2929 15.2929C11.1054 15.4804 11 15.7348 11 16C11 16.2652 11.1054 16.5196 11.2929 16.7071C11.4804 16.8946 11.7348 17 12 17ZM17 16C17 16.2652 16.8946 16.5196 16.7071 16.7071C16.5196 16.8946 16.2652 17 16 17C15.7348 17 15.4804 16.8946 15.2929 16.7071C15.1054 16.5196 15 16.2652 15 16C15 15.7348 15.1054 15.4804 15.2929 15.2929C15.4804 15.1054 15.7348 15 16 15C16.2652 15 16.5196 15.1054 16.7071 15.2929C16.8946 15.4804 17 15.7348 17 16Z" fill="#FF6B35"/></svg>`;
-const TRUST_ICON_RUNNING_XML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M18.25 1.75C18.9793 1.75 19.6786 2.03994 20.1943 2.55566C20.7101 3.07139 21 3.77065 21 4.5C21 5.22935 20.7101 5.92861 20.1943 6.44434C19.6786 6.96006 18.9793 7.25 18.25 7.25C17.5207 7.25 16.8214 6.96006 16.3057 6.44434C15.7899 5.92861 15.5 5.22935 15.5 4.5C15.5 3.77065 15.7899 3.07139 16.3057 2.55566C16.8214 2.03994 17.5207 1.75 18.25 1.75Z" fill="#00E5A0" stroke="#00E5A0" stroke-width="0.5"/><path fill-rule="evenodd" clip-rule="evenodd" d="M9.802 5.93C10.0405 5.89396 10.2819 5.87956 10.523 5.887C10.603 5.891 10.694 5.89767 10.796 5.907C13.179 6.155 14.946 7.943 16.124 9.709L16.187 9.803C16.4838 10.2481 16.8859 10.6131 17.3576 10.8655C17.8293 11.1179 18.356 11.25 18.891 11.25H20.75C20.9489 11.25 21.1397 11.329 21.2803 11.4697C21.421 11.6103 21.5 11.8011 21.5 12C21.5 12.1989 21.421 12.3897 21.2803 12.5303C21.1397 12.671 20.9489 12.75 20.75 12.75H18.89C18.1081 12.75 17.3382 12.5569 16.6488 12.188C15.9594 11.819 15.3718 11.2856 14.938 10.635L14.876 10.541C14.6096 10.1385 14.3169 9.75404 14 9.39L12.116 11.745C11.688 12.279 11.402 12.639 11.209 12.935C11.021 13.221 10.968 13.38 10.954 13.501C10.93 13.701 10.956 13.904 11.027 14.092C11.071 14.206 11.162 14.348 11.413 14.579C11.673 14.819 12.039 15.097 12.585 15.509L12.68 15.582C13.4 16.128 13.9 16.506 14.245 17.01C14.442 17.297 14.597 17.61 14.708 17.94C14.901 18.52 14.901 19.146 14.901 20.05V22C14.901 22.1989 14.822 22.3897 14.6813 22.5303C14.5407 22.671 14.3499 22.75 14.151 22.75C13.9521 22.75 13.7613 22.671 13.6207 22.5303C13.48 22.3897 13.401 22.1989 13.401 22V20.17C13.401 19.1 13.391 18.735 13.285 18.415C13.2184 18.2173 13.1252 18.0296 13.008 17.857C12.818 17.579 12.532 17.352 11.678 16.705L11.65 16.684C11.14 16.298 10.717 15.977 10.398 15.683C10.064 15.376 9.787 15.048 9.626 14.627C9.46807 14.213 9.41249 13.7671 9.464 13.327C9.516 12.879 9.705 12.492 9.954 12.113C10.191 11.751 10.523 11.335 10.922 10.836L12.906 8.357C12.219 7.834 11.462 7.486 10.642 7.401C10.5808 7.39445 10.5195 7.38978 10.458 7.387C10.3074 7.38343 10.1568 7.39347 10.008 7.417C8.943 7.565 7.876 8.157 5.558 9.474L4.122 10.289C3.94908 10.3874 3.74415 10.4131 3.5523 10.3604C3.36045 10.3077 3.1974 10.1809 3.099 10.008C3.0006 9.83508 2.97493 9.63016 3.02763 9.43831C3.08033 9.24646 3.20708 9.0834 3.38 8.985L4.816 8.17L4.968 8.083C7.088 6.879 8.417 6.123 9.803 5.932M9.23 16.425C9.38271 16.5523 9.47861 16.7351 9.49662 16.9331C9.51462 17.1312 9.45325 17.3282 9.326 17.481L8.326 18.682L8.229 18.798C7.587 19.569 7.116 20.136 6.458 20.444C5.8 20.752 5.063 20.752 4.058 20.751H2.75C2.55109 20.751 2.36032 20.672 2.21967 20.5313C2.07902 20.3907 2 20.1999 2 20.001C2 19.8021 2.07902 19.6113 2.21967 19.4707C2.36032 19.33 2.55109 19.251 2.75 19.251H3.908C5.13 19.251 5.504 19.234 5.821 19.086C6.139 18.937 6.391 18.66 7.173 17.722L8.173 16.521C8.23606 16.4452 8.31344 16.3827 8.40071 16.3368C8.48798 16.291 8.58343 16.2628 8.6816 16.2539C8.77977 16.245 8.87873 16.2555 8.97283 16.2849C9.06693 16.3142 9.15432 16.3618 9.23 16.425Z" fill="#00E5A0"/></svg>`;
-const TRUST_ICON_SHIELD_XML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M3 10.417C3 7.219 3 5.62 3.378 5.082C3.755 4.545 5.258 4.03 8.265 3.001L8.838 2.805C10.405 2.268 11.188 2 12 2C12.812 2 13.595 2.268 15.162 2.805L15.735 3.001C18.742 4.03 20.245 4.545 20.622 5.082C21 5.62 21 7.22 21 10.417V11.991C21 17.629 16.761 20.366 14.101 21.527C13.38 21.842 13.02 22 12 22C10.98 22 10.62 21.842 9.899 21.527C7.239 20.365 3 17.63 3 11.991V10.417ZM12 7.25C12.1989 7.25 12.3897 7.32902 12.5303 7.46967C12.671 7.61032 12.75 7.80109 12.75 8V12C12.75 12.1989 12.671 12.3897 12.5303 12.5303C12.3897 12.671 12.1989 12.75 12 12.75C11.8011 12.75 11.6103 12.671 11.4697 12.5303C11.329 12.3897 11.25 12.1989 11.25 12V8C11.25 7.80109 11.329 7.61032 11.4697 7.46967C11.6103 7.32902 11.8011 7.25 12 7.25ZM12 16C12.2652 16 12.5196 15.8946 12.7071 15.7071C12.8946 15.5196 13 15.2652 13 15C13 14.7348 12.8946 14.4804 12.7071 14.2929C12.5196 14.1054 12.2652 14 12 14C11.7348 14 11.4804 14.1054 11.2929 14.2929C11.1054 14.4804 11 14.7348 11 15C11 15.2652 11.1054 15.5196 11.2929 15.7071C11.4804 15.8946 11.7348 16 12 16Z" fill="#FF2D78"/></svg>`;
-const MASCOT_VOLT_XML = `<svg width="134" height="152" viewBox="0 0 134 152" fill="none" xmlns="http://www.w3.org/2000/svg">
-<g filter="url(#filter0_d_86_1148)">
-<path d="M81.6667 2H52.8667C48.4484 2 44.8667 5.58172 44.8667 10V13.2C44.8667 17.6183 48.4484 21.2 52.8667 21.2H81.6667C86.085 21.2 89.6667 17.6183 89.6667 13.2V10C89.6667 5.58172 86.085 2 81.6667 2Z" fill="#00E5A0"/>
-<path d="M81.6667 2H52.8667C48.4484 2 44.8667 5.58172 44.8667 10V13.2C44.8667 17.6183 48.4484 21.2 52.8667 21.2H81.6667C86.085 21.2 89.6667 17.6183 89.6667 13.2V10C89.6667 5.58172 86.085 2 81.6667 2Z" stroke="white" stroke-width="4"/>
-</g>
-<g filter="url(#filter1_d_86_1148)">
-<path d="M96.0667 21.2H38.4667C26.0955 21.2 16.0667 31.2288 16.0667 43.6V123.6C16.0667 135.971 26.0955 146 38.4667 146H96.0667C108.438 146 118.467 135.971 118.467 123.6V43.6C118.467 31.2288 108.438 21.2 96.0667 21.2Z" fill="#00E5A0"/>
-<path d="M96.0667 21.2H38.4667C26.0955 21.2 16.0667 31.2288 16.0667 43.6V123.6C16.0667 135.971 26.0955 146 38.4667 146H96.0667C108.438 146 118.467 135.971 118.467 123.6V43.6C118.467 31.2288 108.438 21.2 96.0667 21.2Z" stroke="white" stroke-width="4"/>
-</g>
-<path d="M51.2665 72.4C56.5684 72.4 60.8665 68.1019 60.8665 62.8C60.8665 57.498 56.5684 53.2 51.2665 53.2C45.9646 53.2 41.6665 57.498 41.6665 62.8C41.6665 68.1019 45.9646 72.4 51.2665 72.4Z" fill="#1A1A1A"/>
-<path d="M54.4666 62C56.6757 62 58.4666 60.2091 58.4666 58C58.4666 55.7909 56.6757 54 54.4666 54C52.2574 54 50.4666 55.7909 50.4666 58C50.4666 60.2091 52.2574 62 54.4666 62Z" fill="white"/>
-<path d="M83.2665 72.4C88.5684 72.4 92.8665 68.1019 92.8665 62.8C92.8665 57.498 88.5684 53.2 83.2665 53.2C77.9646 53.2 73.6665 57.498 73.6665 62.8C73.6665 68.1019 77.9646 72.4 83.2665 72.4Z" fill="#1A1A1A"/>
-<path d="M86.4666 62C88.6757 62 90.4666 60.2091 90.4666 58C90.4666 55.7909 88.6757 54 86.4666 54C84.2574 54 82.4666 55.7909 82.4666 58C82.4666 60.2091 84.2574 62 86.4666 62Z" fill="white"/>
-<path d="M51.2666 85.2C61.9333 95.8666 72.5999 95.8666 83.2666 85.2" stroke="#1A1A1A" stroke-width="4" stroke-linecap="round"/>
-<path d="M16.0666 59.6001C5.39996 48.9334 4.33329 38.2668 12.8666 27.6001" stroke="white" stroke-width="4" stroke-linecap="round"/>
-<path d="M12.8667 30.8C15.5176 30.8 17.6667 28.6509 17.6667 26C17.6667 23.349 15.5176 21.2 12.8667 21.2C10.2157 21.2 8.06665 23.349 8.06665 26C8.06665 28.6509 10.2157 30.8 12.8667 30.8Z" fill="white"/>
-<path d="M118.467 59.6001C129.133 48.9334 130.2 38.2668 121.667 27.6001" stroke="white" stroke-width="4" stroke-linecap="round"/>
-<path d="M121.667 30.8C124.318 30.8 126.467 28.6509 126.467 26C126.467 23.349 124.318 21.2 121.667 21.2C119.016 21.2 116.867 23.349 116.867 26C116.867 28.6509 119.016 30.8 121.667 30.8Z" fill="white"/>
-<path d="M40.5777 84.8C44.1124 84.8 46.9777 81.9346 46.9777 78.4C46.9777 74.8654 44.1124 72 40.5777 72C37.0431 72 34.1777 74.8654 34.1777 78.4C34.1777 81.9346 37.0431 84.8 40.5777 84.8Z" fill="#FF2D78" fill-opacity="0.2"/>
-<path d="M94.3778 84.8C97.9124 84.8 100.778 81.9346 100.778 78.4C100.778 74.8654 97.9124 72 94.3778 72C90.8432 72 87.9778 74.8654 87.9778 78.4C87.9778 81.9346 90.8432 84.8 94.3778 84.8Z" fill="#FF2D78" fill-opacity="0.2"/>
-<path d="M70.1777 104L63.1777 122H77.1777L70.1777 140" stroke="#FFD60A" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
-<defs>
-<filter id="filter0_d_86_1148" x="42.8667" y="0" width="52.8" height="27.2" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-<feFlood flood-opacity="0" result="BackgroundImageFix"/>
-<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
-<feOffset dx="4" dy="4"/>
-<feComposite in2="hardAlpha" operator="out"/>
-<feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0"/>
-<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_86_1148"/>
-<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_86_1148" result="shape"/>
-</filter>
-<filter id="filter1_d_86_1148" x="14.0667" y="19.2" width="110.4" height="132.8" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
-<feFlood flood-opacity="0" result="BackgroundImageFix"/>
-<feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
-<feOffset dx="4" dy="4"/>
-<feComposite in2="hardAlpha" operator="out"/>
-<feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0"/>
-<feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_86_1148"/>
-<feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_86_1148" result="shape"/>
-</filter>
-</defs>
+const TRUST_ICON_RUNNING_XML = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <path d="M18.25 1.75C18.9793 1.75 19.6786 2.03994 20.1943 2.55566C20.7101 3.07139 21 3.77065 21 4.5C21 5.22935 20.7101 5.92861 20.1943 6.44434C19.6786 6.96006 18.9793 7.25 18.25 7.25C17.5207 7.25 16.8214 6.96006 16.3057 6.44434C15.7899 5.92861 15.5 5.22935 15.5 4.5C15.5 3.77065 15.7899 3.07139 16.3057 2.55566C16.8214 2.03994 17.5207 1.75 18.25 1.75Z" fill="#00E5A0" stroke="#00E5A0" stroke-width="0.5"/>
+  <mask id="path-2-outside-1_411_1902" maskUnits="userSpaceOnUse" x="1" y="4.8851" width="21" height="19" fill="black">
+    <rect fill="white" x="1" y="4.8851" width="21" height="19"/>
+    <path fill-rule="evenodd" clip-rule="evenodd" d="M9.802 5.93C10.0405 5.89396 10.2819 5.87956 10.523 5.887C10.603 5.891 10.694 5.89767 10.796 5.907C13.179 6.155 14.946 7.943 16.124 9.709L16.187 9.803C16.4838 10.2481 16.8859 10.6131 17.3576 10.8655C17.8293 11.1179 18.356 11.25 18.891 11.25H20.75C20.9489 11.25 21.1397 11.329 21.2803 11.4697C21.421 11.6103 21.5 11.8011 21.5 12C21.5 12.1989 21.421 12.3897 21.2803 12.5303C21.1397 12.671 20.9489 12.75 20.75 12.75H18.89C18.1081 12.75 17.3382 12.5569 16.6488 12.188C15.9594 11.819 15.3718 11.2856 14.938 10.635L14.876 10.541C14.6096 10.1385 14.3169 9.75404 14 9.39L12.116 11.745C11.688 12.279 11.402 12.639 11.209 12.935C11.021 13.221 10.968 13.38 10.954 13.501C10.93 13.701 10.956 13.904 11.027 14.092C11.071 14.206 11.162 14.348 11.413 14.579C11.673 14.819 12.039 15.097 12.585 15.509L12.68 15.582C13.4 16.128 13.9 16.506 14.245 17.01C14.442 17.297 14.597 17.61 14.708 17.94C14.901 18.52 14.901 19.146 14.901 20.05V22C14.901 22.1989 14.822 22.3897 14.6813 22.5303C14.5407 22.671 14.3499 22.75 14.151 22.75C13.9521 22.75 13.7613 22.671 13.6207 22.5303C13.48 22.3897 13.401 22.1989 13.401 22V20.17C13.401 19.1 13.391 18.735 13.285 18.415C13.2184 18.2173 13.1252 18.0296 13.008 17.857C12.818 17.579 12.532 17.352 11.678 16.705L11.65 16.684C11.14 16.298 10.717 15.977 10.398 15.683C10.064 15.376 9.787 15.048 9.626 14.627C9.46807 14.213 9.41249 13.7671 9.464 13.327C9.516 12.879 9.705 12.492 9.954 12.113C10.191 11.751 10.523 11.335 10.922 10.836L12.906 8.357C12.219 7.834 11.462 7.486 10.642 7.401C10.5808 7.39445 10.5195 7.38978 10.458 7.387C10.3074 7.38343 10.1568 7.39347 10.008 7.417C8.943 7.565 7.876 8.157 5.558 9.474L4.122 10.289C3.94908 10.3874 3.74415 10.4131 3.5523 10.3604C3.36045 10.3077 3.1974 10.1809 3.099 10.008C3.0006 9.83508 2.97493 9.63016 3.02763 9.43831C3.08033 9.24646 3.20708 9.0834 3.38 8.985L4.816 8.17L4.968 8.083C7.088 6.879 8.417 6.123 9.803 5.932M9.23 16.425C9.38271 16.5523 9.47861 16.7351 9.49662 16.9331C9.51462 17.1312 9.45325 17.3282 9.326 17.481L8.326 18.682L8.229 18.798C7.587 19.569 7.116 20.136 6.458 20.444C5.8 20.752 5.063 20.752 4.058 20.751H2.75C2.55109 20.751 2.36032 20.672 2.21967 20.5313C2.07902 20.3907 2 20.1999 2 20.001C2 19.8021 2.07902 19.6113 2.21967 19.4707C2.36032 19.33 2.55109 19.251 2.75 19.251H3.908C5.13 19.251 5.504 19.234 5.821 19.086C6.139 18.937 6.391 18.66 7.173 17.722L8.173 16.521C8.23606 16.4452 8.31344 16.3827 8.40071 16.3368C8.48798 16.291 8.58343 16.2628 8.6816 16.2539C8.77977 16.245 8.87873 16.2555 8.97283 16.2849C9.06693 16.3142 9.15432 16.3618 9.23 16.425Z"/>
+  </mask>
+  <path d="M10.523 5.887L10.548 5.38754L10.5384 5.38724L10.523 5.887ZM10.796 5.907L10.8478 5.40965L10.8416 5.40908L10.796 5.907ZM16.124 9.709L15.708 9.98646L15.7087 9.98737L16.124 9.709ZM16.187 9.803L16.603 9.52562L16.6023 9.52464L16.187 9.803ZM18.891 11.25L18.891 11.75H18.891V11.25ZM18.89 12.75L18.89 13.25H18.89V12.75ZM14.938 10.635L14.5206 10.9103L14.522 10.9124L14.938 10.635ZM14.876 10.541L15.2934 10.2657L15.2929 10.265L14.876 10.541ZM14 9.39L14.3771 9.06169L13.9838 8.6099L13.6096 9.07766L14 9.39ZM12.116 11.745L12.5061 12.0577L12.5064 12.0574L12.116 11.745ZM11.209 12.935L11.6268 13.2097L11.6278 13.2081L11.209 12.935ZM10.954 13.501L11.4504 13.5606L11.4507 13.5585L10.954 13.501ZM11.027 14.092L10.5592 14.2687L10.5605 14.272L11.027 14.092ZM11.413 14.579L11.7521 14.2116L11.7516 14.2111L11.413 14.579ZM12.585 15.509L12.8897 15.1125L12.8862 15.1099L12.585 15.509ZM12.68 15.582L12.3753 15.9785L12.3779 15.9804L12.68 15.582ZM14.245 17.01L13.8324 17.2924L13.8328 17.293L14.245 17.01ZM14.708 17.94L15.1824 17.7821L15.1819 17.7806L14.708 17.94ZM14.901 22H15.401H14.901ZM13.285 18.415L13.7596 18.2578L13.7588 18.2554L13.285 18.415ZM13.008 17.857L13.4216 17.5761L13.4208 17.5749L13.008 17.857ZM11.678 16.705L11.9799 16.3065L11.978 16.305L11.678 16.705ZM11.65 16.684L11.3482 17.0827L11.35 17.084L11.65 16.684ZM10.398 15.683L10.7369 15.3153L10.7364 15.3149L10.398 15.683ZM9.626 14.627L9.15885 14.8052L9.15899 14.8056L9.626 14.627ZM9.464 13.327L9.96061 13.3851L9.96067 13.3847L9.464 13.327ZM9.954 12.113L10.3719 12.3875L10.3723 12.3869L9.954 12.113ZM10.922 10.836L10.5316 10.5236L10.5315 10.5238L10.922 10.836ZM12.906 8.357L13.2964 8.66943L13.6165 8.26947L13.2089 7.95917L12.906 8.357ZM10.642 7.401L10.5888 7.89816L10.5904 7.89834L10.642 7.401ZM10.458 7.387L10.4806 6.8874L10.4699 6.88714L10.458 7.387ZM10.008 7.417L10.0768 7.91233L10.0861 7.91086L10.008 7.417ZM5.558 9.474L5.8048 9.90885L5.805 9.90874L5.558 9.474ZM4.122 10.289L3.8752 9.85416L3.87472 9.85443L4.122 10.289ZM3.38 8.985L3.1332 8.55016L3.13272 8.55043L3.38 8.985ZM4.816 8.17L5.0628 8.60485L5.06438 8.60395L4.816 8.17ZM4.968 8.083L4.72108 7.64822L4.71962 7.64906L4.968 8.083ZM9.23 16.425L8.90962 16.8089L8.9098 16.809L9.23 16.425ZM9.326 17.481L8.9418 17.161L8.94176 17.1611L9.326 17.481ZM8.326 18.682L8.70957 19.0027L8.71024 19.0019L8.326 18.682ZM8.229 18.798L7.84543 18.4773L7.84477 18.4781L8.229 18.798ZM4.058 20.751L4.0585 20.251H4.058V20.751ZM2.75 20.751V21.251V20.751ZM5.821 19.086L6.03252 19.5391L6.03314 19.5388L5.821 19.086ZM7.173 17.722L7.55704 18.0422L7.55724 18.0419L7.173 17.722ZM8.173 16.521L8.55724 16.8409L8.55729 16.8409L8.173 16.521ZM9.802 5.93L9.87671 6.42439C10.0854 6.39285 10.2966 6.38026 10.5076 6.38677L10.523 5.887L10.5384 5.38724C10.2671 5.37887 9.99566 5.39506 9.72729 5.43562L9.802 5.93ZM10.523 5.887L10.498 6.38638C10.5696 6.38996 10.6535 6.39605 10.7504 6.40492L10.796 5.907L10.8416 5.40908C10.7345 5.39929 10.6364 5.39205 10.548 5.38763L10.523 5.887ZM10.796 5.907L10.7442 6.40432C12.9004 6.62871 14.5553 8.25836 15.708 9.98646L16.124 9.709L16.54 9.43154C15.3367 7.62765 13.4576 5.6813 10.8478 5.40969L10.796 5.907ZM16.124 9.709L15.7087 9.98737L15.7717 10.0814L16.187 9.803L16.6023 9.52464L16.5393 9.43064L16.124 9.709ZM16.187 9.803L15.771 10.0804C16.1135 10.594 16.5774 11.0151 17.1217 11.3064L17.3576 10.8655L17.5935 10.4247C17.1944 10.2111 16.8541 9.90226 16.603 9.52562L16.187 9.803ZM17.3576 10.8655L17.1217 11.3064C17.6659 11.5976 18.2737 11.75 18.891 11.75L18.891 11.25L18.891 10.75C18.4383 10.75 17.9926 10.6382 17.5935 10.4247L17.3576 10.8655ZM18.891 11.25V11.75H20.75V11.25V10.75H18.891V11.25ZM20.75 11.25V11.75C20.8163 11.75 20.8799 11.7763 20.9268 11.8232L21.2803 11.4697L21.6339 11.1161C21.3995 10.8817 21.0815 10.75 20.75 10.75V11.25ZM21.2803 11.4697L20.9268 11.8232C20.9737 11.8701 21 11.9337 21 12H21.5H22C22 11.6685 21.8683 11.3505 21.6339 11.1161L21.2803 11.4697ZM21.5 12H21C21 12.0663 20.9737 12.1299 20.9268 12.1768L21.2803 12.5303L21.6339 12.8839C21.8683 12.6495 22 12.3315 22 12H21.5ZM21.2803 12.5303L20.9268 12.1768C20.8799 12.2237 20.8163 12.25 20.75 12.25V12.75V13.25C21.0815 13.25 21.3995 13.1183 21.6339 12.8839L21.2803 12.5303ZM20.75 12.75V12.25H18.89V12.75V13.25H20.75V12.75ZM18.89 12.75L18.89 12.25C18.1904 12.25 17.5016 12.0773 16.8848 11.7471L16.6488 12.188L16.4129 12.6288C17.1749 13.0366 18.0258 13.25 18.89 13.25L18.89 12.75ZM16.6488 12.188L16.8848 11.7471C16.2679 11.417 15.7421 10.9397 15.354 10.3576L14.938 10.635L14.522 10.9124C15.0014 11.6314 15.6509 12.221 16.4129 12.6288L16.6488 12.188ZM14.938 10.635L15.3554 10.3597L15.2934 10.2657L14.876 10.541L14.4586 10.8163L14.5206 10.9103L14.938 10.635ZM14.876 10.541L15.2929 10.265C15.0144 9.84424 14.7084 9.44227 14.3771 9.06169L14 9.39L13.6229 9.71832C13.9254 10.0658 14.2048 10.4328 14.4591 10.817L14.876 10.541ZM14 9.39L13.6096 9.07766L11.7256 11.4327L12.116 11.745L12.5064 12.0574L14.3904 9.70235L14 9.39ZM12.116 11.745L11.7259 11.4323C11.3035 11.9592 10.9996 12.3408 10.7902 12.6619L11.209 12.935L11.6278 13.2081C11.8044 12.9372 12.0725 12.5988 12.5061 12.0577L12.116 11.745ZM11.209 12.935L10.7912 12.6604C10.5826 12.9776 10.484 13.2127 10.4573 13.4435L10.954 13.501L11.4507 13.5585C11.452 13.5473 11.4594 13.4644 11.6268 13.2097L11.209 12.935ZM10.954 13.501L10.4576 13.4414C10.4237 13.7235 10.4606 14.0074 10.5592 14.2687L11.027 14.092L11.4948 13.9154C11.4514 13.8006 11.4363 13.6785 11.4504 13.5606L10.954 13.501ZM11.027 14.092L10.5605 14.272C10.6434 14.4868 10.7955 14.6903 11.0744 14.9469L11.413 14.579L11.7516 14.2111C11.5285 14.0057 11.4986 13.9253 11.4935 13.912L11.027 14.092ZM11.413 14.579L11.0739 14.9464C11.3563 15.2071 11.7456 15.502 12.2838 15.9081L12.585 15.509L12.8862 15.1099C12.3324 14.692 11.9897 14.4309 11.7521 14.2116L11.413 14.579ZM12.585 15.509L12.2803 15.9055L12.3753 15.9785L12.68 15.582L12.9847 15.1855L12.8897 15.1125L12.585 15.509ZM12.68 15.582L12.3779 15.9804C13.1178 16.5415 13.5427 16.8692 13.8324 17.2924L14.245 17.01L14.6576 16.7276C14.2573 16.1428 13.6822 15.7145 12.9821 15.1836L12.68 15.582ZM14.245 17.01L13.8328 17.293C14.003 17.5409 14.1375 17.8122 14.2341 18.0994L14.708 17.94L15.1819 17.7806C15.0565 17.4078 14.881 17.0531 14.6572 16.727L14.245 17.01ZM14.708 17.94L14.2336 18.0979C14.3958 18.5853 14.401 19.1219 14.401 20.05H14.901H15.401C15.401 19.1701 15.4062 18.4547 15.1824 17.7821L14.708 17.94ZM14.901 20.05H14.401V22H14.901H15.401V20.05H14.901ZM14.901 22H14.401C14.401 22.0663 14.3747 22.1299 14.3278 22.1768L14.6813 22.5303L15.0349 22.8839C15.2693 22.6495 15.401 22.3315 15.401 22H14.901ZM14.6813 22.5303L14.3278 22.1768C14.2809 22.2237 14.2173 22.25 14.151 22.25V22.75V23.25C14.4825 23.25 14.8005 23.1183 15.0349 22.8839L14.6813 22.5303ZM14.151 22.75V22.25C14.0847 22.25 14.0211 22.2237 13.9742 22.1768L13.6207 22.5303L13.2671 22.8839C13.5015 23.1183 13.8195 23.25 14.151 23.25V22.75ZM13.6207 22.5303L13.9742 22.1768C13.9273 22.1299 13.901 22.0663 13.901 22H13.401H12.901C12.901 22.3315 13.0327 22.6495 13.2671 22.8839L13.6207 22.5303ZM13.401 22H13.901V20.17H13.401H12.901V22H13.401ZM13.401 20.17H13.901C13.901 19.1355 13.8971 18.6728 13.7596 18.2578L13.285 18.415L12.8104 18.5722C12.8849 18.7972 12.901 19.0645 12.901 20.17H13.401ZM13.285 18.415L13.7588 18.2554C13.6778 18.0147 13.5643 17.7862 13.4216 17.5761L13.008 17.857L12.5944 18.1379C12.6861 18.273 12.759 18.4199 12.8112 18.5746L13.285 18.415ZM13.008 17.857L13.4208 17.5749C13.1735 17.2131 12.8037 16.9306 11.9799 16.3065L11.678 16.705L11.3761 17.1035C12.2603 17.7734 12.4625 17.9449 12.5952 18.1391L13.008 17.857ZM11.678 16.705L11.978 16.305L11.95 16.284L11.65 16.684L11.35 17.084L11.378 17.105L11.678 16.705ZM11.65 16.684L11.9517 16.2853C11.4353 15.8945 11.0342 15.5894 10.7369 15.3153L10.398 15.683L10.0591 16.0507C10.3998 16.3646 10.8447 16.7016 11.3483 17.0827L11.65 16.684ZM10.398 15.683L10.7364 15.3149C10.4301 15.0334 10.215 14.7675 10.093 14.4484L9.626 14.627L9.15899 14.8056C9.35897 15.3285 9.69789 15.7186 10.0596 16.0511L10.398 15.683ZM9.626 14.627L10.0932 14.4488C9.96394 14.1101 9.91846 13.7452 9.96061 13.3851L9.464 13.327L8.96739 13.2689C8.90651 13.7889 8.9722 14.316 9.15885 14.8052L9.626 14.627ZM9.464 13.327L9.96067 13.3847C9.99998 13.046 10.1437 12.7349 10.3719 12.3875L9.954 12.113L9.53612 11.8385C9.26633 12.2491 9.03202 12.712 8.96733 13.2694L9.464 13.327ZM9.954 12.113L10.3723 12.3869C10.5935 12.0491 10.9084 11.6536 11.3125 11.1483L10.922 10.836L10.5315 10.5238C10.1376 11.0164 9.78852 11.4529 9.53568 11.8391L9.954 12.113ZM10.922 10.836L11.3124 11.1484L13.2964 8.66943L12.906 8.357L12.5156 8.04458L10.5316 10.5236L10.922 10.836ZM12.906 8.357L13.2089 7.95917C12.4665 7.39404 11.6247 7.00019 10.6936 6.90367L10.642 7.401L10.5904 7.89834C11.2993 7.97181 11.9715 8.27396 12.6031 8.75484L12.906 8.357ZM10.642 7.401L10.6952 6.90385C10.6239 6.8962 10.5523 6.89076 10.4806 6.88751L10.458 7.387L10.4354 7.88649C10.4866 7.88881 10.5378 7.8927 10.5888 7.89816L10.642 7.401ZM10.458 7.387L10.4699 6.88714C10.2892 6.88285 10.1084 6.8949 9.92988 6.92314L10.008 7.417L10.0861 7.91086C10.2052 7.89203 10.3256 7.884 10.4461 7.88686L10.458 7.387ZM10.008 7.417L9.93918 6.92176C8.75618 7.08616 7.59097 7.74388 5.311 9.03927L5.558 9.474L5.805 9.90874C8.16103 8.57013 9.12982 8.04385 10.0768 7.91224L10.008 7.417ZM5.558 9.474L5.3112 9.03916L3.8752 9.85416L4.122 10.289L4.3688 10.7238L5.8048 9.90885L5.558 9.474ZM4.122 10.289L3.87472 9.85443C3.81705 9.88724 3.74872 9.89581 3.68474 9.87823L3.5523 10.3604L3.41987 10.8425C3.73959 10.9303 4.0811 10.8876 4.36928 10.7236L4.122 10.289ZM3.5523 10.3604L3.68474 9.87823C3.62076 9.86066 3.56638 9.81839 3.53357 9.76072L3.099 10.008L2.66443 10.2553C2.82841 10.5435 3.10015 10.7547 3.41987 10.8425L3.5523 10.3604ZM3.099 10.008L3.53357 9.76072C3.50076 9.70306 3.4922 9.63472 3.50977 9.57074L3.02763 9.43831L2.54549 9.30587C2.45767 9.62559 2.50045 9.96711 2.66443 10.2553L3.099 10.008ZM3.02763 9.43831L3.50977 9.57074C3.52735 9.50676 3.56961 9.45239 3.62728 9.41957L3.38 8.985L3.13272 8.55043C2.84454 8.71441 2.63331 8.98615 2.54549 9.30587L3.02763 9.43831ZM3.38 8.985L3.6268 9.41985L5.0628 8.60485L4.816 8.17L4.5692 7.73516L3.1332 8.55016L3.38 8.985ZM4.816 8.17L5.06438 8.60395L5.21638 8.51695L4.968 8.083L4.71962 7.64906L4.56762 7.73606L4.816 8.17ZM4.968 8.083L5.21492 8.51778C7.3668 7.29567 8.60188 6.60225 9.87126 6.42732L9.803 5.932L9.73474 5.43668C8.23212 5.64376 6.8092 6.46233 4.72108 7.64823L4.968 8.083ZM9.23 16.425L8.9098 16.809C8.9607 16.8515 8.99267 16.9124 8.99867 16.9784L9.49662 16.9331L9.99456 16.8879C9.96456 16.5578 9.80473 16.2532 9.5502 16.041L9.23 16.425ZM9.49662 16.9331L8.99867 16.9784C9.00467 17.0444 8.98421 17.1101 8.9418 17.161L9.326 17.481L9.7102 17.801C9.92228 17.5463 10.0246 17.2179 9.99456 16.8879L9.49662 16.9331ZM9.326 17.481L8.94176 17.1611L7.94176 18.3621L8.326 18.682L8.71024 19.0019L9.71024 17.8009L9.326 17.481ZM8.326 18.682L7.94243 18.3613L7.84543 18.4773L8.229 18.798L8.61257 19.1187L8.70957 19.0027L8.326 18.682ZM8.229 18.798L7.84477 18.4781C7.18213 19.2738 6.78296 19.7398 6.24603 19.9912L6.458 20.444L6.66997 20.8968C7.44904 20.5322 7.99187 19.8642 8.61323 19.1179L8.229 18.798ZM6.458 20.444L6.24603 19.9912C5.70887 20.2426 5.09475 20.252 4.0585 20.251L4.058 20.751L4.0575 21.251C5.03125 21.252 5.89113 21.2614 6.66997 20.8968L6.458 20.444ZM4.058 20.751V20.251H2.75V20.751V21.251H4.058V20.751ZM2.75 20.751V20.251C2.68369 20.251 2.62011 20.2247 2.57322 20.1778L2.21967 20.5313L1.86612 20.8849C2.10054 21.1193 2.41848 21.251 2.75 21.251V20.751ZM2.21967 20.5313L2.57322 20.1778C2.52634 20.1309 2.5 20.0673 2.5 20.001H2H1.5C1.5 20.3325 1.6317 20.6505 1.86612 20.8849L2.21967 20.5313ZM2 20.001H2.5C2.5 19.9347 2.52634 19.8711 2.57322 19.8242L2.21967 19.4707L1.86612 19.1171C1.6317 19.3515 1.5 19.6695 1.5 20.001H2ZM2.21967 19.4707L2.57322 19.8242C2.62011 19.7773 2.6837 19.751 2.75 19.751V19.251V18.751C2.41848 18.751 2.10054 18.8827 1.86612 19.1171L2.21967 19.4707ZM2.75 19.251V19.751H3.908V19.251V18.751H2.75V19.251ZM3.908 19.251V19.751C4.51425 19.751 4.93411 19.7471 5.24354 19.7224C5.56307 19.697 5.80053 19.6474 6.03252 19.5391L5.821 19.086L5.60948 18.6329C5.52447 18.6726 5.41643 18.7055 5.16421 18.7256C4.90189 18.7465 4.52375 18.751 3.908 18.751V19.251ZM5.821 19.086L6.03314 19.5388C6.26588 19.4297 6.45642 19.2787 6.68056 19.0494C6.89755 18.8274 7.16921 18.5074 7.55704 18.0422L7.173 17.722L6.78896 17.4018C6.39479 17.8746 6.14945 18.1621 5.96544 18.3504C5.78858 18.5313 5.69412 18.5933 5.60886 18.6332L5.821 19.086ZM7.173 17.722L7.55724 18.0419L8.55724 16.8409L8.173 16.521L7.78876 16.2011L6.78876 17.4021L7.173 17.722ZM8.173 16.521L8.55729 16.8409C8.57831 16.8156 8.60411 16.7948 8.6332 16.7795L8.40071 16.3368L8.16823 15.8942C8.02278 15.9705 7.89381 16.0749 7.78871 16.2011L8.173 16.521ZM8.40071 16.3368L8.6332 16.7795C8.66228 16.7642 8.6941 16.7548 8.72683 16.7518L8.6816 16.2539L8.63637 15.7559C8.47276 15.7708 8.31368 15.8178 8.16823 15.8942L8.40071 16.3368ZM8.6816 16.2539L8.72683 16.7518C8.75955 16.7489 8.79254 16.7524 8.8239 16.7622L8.97283 16.2849L9.12176 15.8076C8.96493 15.7586 8.79999 15.7411 8.63637 15.7559L8.6816 16.2539ZM8.97283 16.2849L8.8239 16.7622C8.85527 16.7719 8.8844 16.7878 8.90962 16.8089L9.23 16.425L9.55037 16.0411C9.42424 15.9359 9.27859 15.8565 9.12176 15.8076L8.97283 16.2849Z" fill="#00E5A0"/>
 </svg>`;
-
+const TRUST_ICON_SHIELD_XML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M3 10.417C3 7.219 3 5.62 3.378 5.082C3.755 4.545 5.258 4.03 8.265 3.001L8.838 2.805C10.405 2.268 11.188 2 12 2C12.812 2 13.595 2.268 15.162 2.805L15.735 3.001C18.742 4.03 20.245 4.545 20.622 5.082C21 5.62 21 7.22 21 10.417V11.991C21 17.629 16.761 20.366 14.101 21.527C13.38 21.842 13.02 22 12 22C10.98 22 10.62 21.842 9.899 21.527C7.239 20.365 3 17.63 3 11.991V10.417ZM12 7.25C12.1989 7.25 12.3897 7.32902 12.5303 7.46967C12.671 7.61032 12.75 7.80109 12.75 8V12C12.75 12.1989 12.671 12.3897 12.5303 12.5303C12.3897 12.671 12.1989 12.75 12 12.75C11.8011 12.75 11.6103 12.671 11.4697 12.5303C11.329 12.3897 11.25 12.1989 11.25 12V8C11.25 7.80109 11.329 7.61032 11.4697 7.46967C11.6103 7.32902 11.8011 7.25 12 7.25ZM12 16C12.2652 16 12.5196 15.8946 12.7071 15.7071C12.8946 15.5196 13 15.2652 13 15C13 14.7348 12.8946 14.4804 12.7071 14.2929C12.5196 14.1054 12.2652 14 12 14C11.7348 14 11.4804 14.1054 11.2929 14.2929C11.1054 14.4804 11 14.7348 11 15C11 15.2652 11.1054 15.5196 11.2929 15.7071C11.4804 15.8946 11.7348 16 12 16Z" fill="#FF2D78"/></svg>`;
 const ONBOARDING_TRUST_CARDS: {
   readonly iconXml: string;
   readonly text: string;
@@ -1084,15 +1133,20 @@ const ONBOARDING_TRUST_CARDS: {
   { iconXml: TRUST_ICON_SHIELD_XML, text: "We never sell your data. Ever." },
 ];
 
+// Onboarding flow shown to first-time users. Order = on-screen order.
+//   0 → Hero (Turn Scrolling Into Energy)
+//   1 → Persona Selection (What Goal Brought You Here?)
+//   2 → Name + Goal + Scroll Estimate
+//   3 → Difficulty (Chill / Balanced / Beast)
+//   4 → Lock the Vault (app picker + iOS Screen Time / Android Usage Access)
+//   5 → Trust Bridge (Volt Respects Your Hustle) → auth / sign-up
 const onboardingScreens: ScreenKey[] = [
   "onboarding1",
   "onboarding2",
-  "onboardingScreenTime",
   "onboarding4",
-  "onboarding3",
   "onboarding5",
+  "onboarding3",
   "onboarding6",
-  "onboarding7",
 ];
 
 const SKIN_COLORS: Record<string, { body: string; blush: string; bolt: string }> = {
@@ -1256,6 +1310,142 @@ function ProgressDots({ active, total }: { readonly active: number; readonly tot
   );
 }
 
+function formatOnboardingMinutes(minutes: number): string {
+  if (minutes < 60) return `${minutes} MIN`;
+  if (minutes % 60 === 0) {
+    const hours = minutes / 60;
+    return `${hours} ${hours === 1 ? "HOUR" : "HOURS"}`;
+  }
+  return `${Math.floor(minutes / 60)}H ${minutes % 60}M`;
+}
+
+function OnboardingDifficultyStep({
+  selectedDifficulty,
+  baselineMinutes,
+  onSelect,
+}: {
+  readonly selectedDifficulty: DifficultyKey;
+  readonly baselineMinutes: number;
+  readonly onSelect: (difficulty: DifficultyKey, reductionPercent: number) => void;
+}) {
+  return (
+    <View style={s.obDiffFigmaWrap}>
+      <View style={s.obDiffFigmaHeroRow}>
+        <Image
+          source={ONBOARDING_DIFFICULTY_MASCOT}
+          style={s.obDiffFigmaMascot}
+          contentFit="contain"
+          accessibilityLabel="Volt mascot"
+        />
+        <OnboardingShadowBox
+          frameStyle={s.obDiffFigmaBubbleFrame}
+          shadowStyle={s.obDiffFigmaBubbleShadow}
+          cardStyle={s.obDiffFigmaBubble}
+        >
+          <Text style={s.obDiffFigmaBubbleText}>
+            How hard should I push you?
+          </Text>
+        </OnboardingShadowBox>
+      </View>
+
+      <View style={s.obDiffFigmaOptions}>
+        {DIFFICULTIES.map((item) => {
+          const selected = item.key === selectedDifficulty;
+          const targetMinutes = Math.round(
+            baselineMinutes * (1 - item.reductionPercent / 100),
+          );
+
+          return (
+            <Pressable
+              key={item.key}
+              onPress={() => onSelect(item.key, item.reductionPercent)}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: selected }}
+              accessibilityLabel={`${item.label}. ${item.tag}. ${item.desc}`}
+            >
+              <OnboardingShadowBox
+                frameStyle={s.obDiffFigmaCardFrame}
+                shadowStyle={s.obDiffFigmaCardShadow}
+                cardStyle={[
+                  s.obDiffFigmaCard,
+                  selected ? s.obDiffFigmaCardActive : undefined,
+                ]}
+              >
+                <View style={s.obDiffFigmaTextCol}>
+                  <Text style={s.obDiffFigmaTitle}>{item.label}</Text>
+                  <Text style={s.obDiffFigmaTag}>{item.tag}</Text>
+                  <Text
+                    style={[
+                      s.obDiffFigmaDesc,
+                      selected ? s.obDiffFigmaDescActive : undefined,
+                    ]}
+                  >
+                    {selected
+                      ? `Cut off ${item.reductionPercent}% of scrolling`
+                      : item.desc}
+                  </Text>
+
+                  {selected ? (
+                    <View style={s.obDiffFigmaComparisonRow}>
+                      <View
+                        style={[
+                          s.obDiffFigmaComparisonCard,
+                          s.obDiffFigmaComparisonCurrent,
+                          { height: item.comparisonHeight },
+                        ]}
+                      >
+                        <Text style={s.obDiffFigmaComparisonLabel}>
+                          Scroll time
+                        </Text>
+                        <Text style={s.obDiffFigmaComparisonCurrentValue}>
+                          {formatOnboardingMinutes(baselineMinutes)}
+                        </Text>
+                      </View>
+
+                      <View style={s.obDiffFigmaArrow}>
+                        <MaterialIcons
+                          name="arrow-forward"
+                          size={27}
+                          color={C.black}
+                        />
+                      </View>
+
+                      <View
+                        style={[
+                          s.obDiffFigmaComparisonCard,
+                          s.obDiffFigmaComparisonGoal,
+                        ]}
+                      >
+                        <Text style={s.obDiffFigmaComparisonLabel}>
+                          Your goal
+                        </Text>
+                        <Text style={s.obDiffFigmaComparisonGoalValue}>
+                          {formatOnboardingMinutes(targetMinutes)}
+                        </Text>
+                      </View>
+                    </View>
+                  ) : null}
+                </View>
+
+                <View
+                  style={[
+                    s.obDiffFigmaRadio,
+                    selected ? s.obDiffFigmaRadioSelected : undefined,
+                  ]}
+                />
+              </OnboardingShadowBox>
+            </Pressable>
+          );
+        })}
+      </View>
+
+      <Text style={s.obDiffFigmaNote}>
+        You can change this anytime in Profile
+      </Text>
+    </View>
+  );
+}
+
 function BottomNav({
   active,
   onPress,
@@ -1305,11 +1495,25 @@ function StreakChip({ day }: { readonly day: number }) {
   );
 }
 
-function CoinChip({ amount }: { readonly amount: number }) {
+function PostAuthBackButton({
+  top,
+  onPress,
+  light,
+}: {
+  readonly top: number;
+  readonly onPress: () => void;
+  readonly light?: boolean;
+}) {
   return (
-    <View style={s.coinChip}>
-      <Text style={s.coinChipIcon}>🪙</Text>
-      <Text style={s.coinChipText}>{amount}</Text>
+    <View style={[s.postAuthBackWrap, { top }]}>
+      <Pressable
+        style={[s.postAuthBackBtn, light ? s.postAuthBackBtnLight : undefined]}
+        onPress={onPress}
+        accessibilityRole="button"
+        accessibilityLabel="Go back"
+      >
+        <MaterialIcons name="arrow-back" size={22} color={light ? C.white : C.black} />
+      </Pressable>
     </View>
   );
 }
@@ -1329,6 +1533,7 @@ export default function HomeScreen() {
   const [lbTab, setLbTab] = useState<"weekly" | "running" | "friends">("weekly");
   const [selectedNode, setSelectedNode] = useState<number | null>(2);
   const [socialView, setSocialView] = useState<"map" | "ranks">("map");
+  const [socialCardPage, setSocialCardPage] = useState(0);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [persona, setPersona] = useState<PersonaKey>("focus");
   const [difficulty, setDifficulty] = useState<DifficultyKey>("chill");
@@ -1347,6 +1552,7 @@ export default function HomeScreen() {
   /** Guided breathwork full-screen session (Unlock / Today). */
   const [activeBreathworkActivity, setActiveBreathworkActivity] = useState<ActivityItem | null>(null);
   const [activeGuidedActivity, setActiveGuidedActivity] = useState<ActivityItem | null>(null);
+  const [activeCoachTrigger, setActiveCoachTrigger] = useState<CoachTrigger | undefined>();
   const [activeGPSSession, setActiveGPSSession] = useState(false);
   const [activeCoinRun, setActiveCoinRun] = useState(false);
   const [giftItemId, setGiftItemId] = useState<string | null>(null);
@@ -1356,14 +1562,22 @@ export default function HomeScreen() {
   const [giftTargetUserId, setGiftTargetUserId] = useState<string | null>(null);
   const [recalBannerDismissed, setRecalBannerDismissed] = useState(false);
   const [recalBannerText, setRecalBannerText] = useState<string | null>(null);
-  const [selectedPlan, setSelectedPlan] = useState<"yearly" | "monthly" | "weekly">("yearly");
+  const [selectedPlan, setSelectedPlan] = useState<PurchasableBillingPeriod>("weekly");
   const [rcPackages, setRcPackages] = useState<PurchasesPackage[]>([]);
-  const [discountPackage, setDiscountPackage] = useState<PurchasesPackage | null>(null);
   const [purchasing, setPurchasing] = useState(false);
-  const [isPro, setIsPro] = useState(false);
+  const [, setIsPro] = useState(false);
   const [billingPeriod, setBillingPeriod] = useState<BillingPeriod | null>(null);
+  const [subscriptionExpired, setSubscriptionExpired] = useState(false);
   const [showVpClaim, setShowVpClaim] = useState(false);
-  const [expandedCategories, setExpandedCategories] = useState<Set<ActivityCategory>>(new Set());
+  const [rewardCelebration, setRewardCelebration] = useState<{
+    activityName: string;
+    minutesEarned: number;
+    vpEarned: number;
+    coinsEarned: number;
+    dailyQuestCompleted: boolean;
+    completedNodeLabel?: string;
+    nodeDp: number;
+  } | null>(null);
 
   // iOS Screen Time state
   const [screenTimeAuth, setScreenTimeAuth] = useState<"unknown" | "approved" | "denied" | "notDetermined">("unknown");
@@ -1372,9 +1586,22 @@ export default function HomeScreen() {
   const [iosShieldPickerVisible, setIosShieldPickerVisible] = useState(false);
   const [androidShieldModalVisible, setAndroidShieldModalVisible] = useState(false);
   const [blockedAppsVisible, setBlockedAppsVisible] = useState(false);
+  const [shieldEnabled, setShieldEnabled] = useState(true);
+  const [shieldUnlockUntil, setShieldUnlockUntil] = useState(0);
+  const [shieldRuntimeLoading, setShieldRuntimeLoading] = useState(true);
+  const [shieldClock, setShieldClock] = useState(() => Date.now());
   const [androidUsageAccessGranted, setAndroidUsageAccessGranted] = useState(false);
   const [androidAccessibilityGranted, setAndroidAccessibilityGranted] = useState(false);
   const [androidPermissionsLoading, setAndroidPermissionsLoading] = useState(false);
+  const [profileEditorVisible, setProfileEditorVisible] = useState(false);
+  const [profileDraftName, setProfileDraftName] = useState("");
+  const [profileDraftGoal, setProfileDraftGoal] = useState("");
+  const [profileSaving, setProfileSaving] = useState(false);
+
+  const isTodayScreen = screen === "today";
+  const isSocialScreen = screen === "social";
+  const isStoreScreen = screen === "store";
+  const isProfileScreen = screen === "profile";
 
   const profile = useQuery(
     api.users.getProfile,
@@ -1388,52 +1615,90 @@ export default function HomeScreen() {
     api.streaks.getStreak,
     isAuthenticated ? {} : "skip"
   );
-  const todayDp = useQuery(
-    api.activities.getTodayDp,
-    isAuthenticated ? {} : "skip"
-  );
   const todayCounts = useQuery(
     api.activities.getTodayCounts,
     isAuthenticated ? {} : "skip"
+  );
+  const todaySummary = useQuery(
+    api.activities.getTodaySummary,
+    isAuthenticated && isTodayScreen ? {} : "skip"
   );
   const mapProgress = useQuery(
     api.training.getMapProgress,
     isAuthenticated ? {} : "skip"
   );
-  const lbTabToQuery: Record<string, string> = { weekly: "league", running: "alltime", friends: "friends" };
+  const lbTabToQuery = {
+    weekly: "league",
+    running: "alltime",
+    friends: "friends",
+  } as const;
   const rankings = useQuery(
     api.leaderboard.getWeeklyRankings,
-    isAuthenticated ? { tab: lbTabToQuery[lbTab] ?? "league" } : "skip"
+    isAuthenticated && isSocialScreen
+      ? { tab: lbTabToQuery[lbTab] ?? "league" }
+      : "skip"
   );
   const divisionInfo = useQuery(
     api.leaderboard.getDivisionInfo,
-    isAuthenticated ? {} : "skip"
+    isAuthenticated && isSocialScreen ? {} : "skip"
   );
   const fuelEconomy = useQuery(
     api.fuelMetrics.getFuelEconomySummary,
-    isAuthenticated ? {} : "skip"
+    isAuthenticated && isProfileScreen ? {} : "skip"
   );
-  const storeItems = useQuery(api.store.getStoreItems, isAuthenticated ? {} : "skip");
-  const ownedItems = useQuery(api.store.getOwnedItems, isAuthenticated ? {} : "skip");
-  const receivedGifts = useQuery(api.gifts.getReceivedGifts, isAuthenticated ? {} : "skip");
-  const friendsList = useQuery(api.social.getFriends, isAuthenticated ? {} : "skip");
-  const myFriendCode = useQuery(api.social.getMyFriendCode, isAuthenticated ? {} : "skip");
-  const friendRequests = useQuery(api.social.getFriendRequests, isAuthenticated ? {} : "skip");
-  const friendActivity = useQuery(api.social.getFriendActivity, isAuthenticated ? {} : "skip");
+  const storeItems = useQuery(
+    api.store.getStoreItems,
+    isAuthenticated && isStoreScreen ? {} : "skip"
+  );
+  const ownedItems = useQuery(
+    api.store.getOwnedItems,
+    isAuthenticated && isStoreScreen ? {} : "skip"
+  );
+  const receivedGifts = useQuery(
+    api.gifts.getReceivedGifts,
+    isAuthenticated && isTodayScreen ? {} : "skip"
+  );
+  const friendsList = useQuery(
+    api.social.getFriends,
+    isAuthenticated && (isSocialScreen || isStoreScreen) ? {} : "skip"
+  );
+  const myFriendCode = useQuery(
+    api.social.getMyFriendCode,
+    isAuthenticated && isSocialScreen ? {} : "skip"
+  );
+  const friendRequests = useQuery(
+    api.social.getFriendRequests,
+    isAuthenticated && isSocialScreen ? {} : "skip"
+  );
+  const friendActivity = useQuery(
+    api.social.getFriendActivity,
+    isAuthenticated && isSocialScreen ? {} : "skip"
+  );
 
   const ensureProfile = useMutation(api.users.ensureProfile);
   const claimWelcomeBonus = useMutation(api.users.claimWelcomeBonus);
   const logActivity = useMutation(api.activities.logActivity);
+  const claimFuel = useMutation(api.activities.claimFuel);
   const toggleAppLock = useMutation(api.users.toggleAppLock);
-  const syncBlockedApps = useMutation((api as any).users.syncBlockedApps);
+  const syncBlockedApps = useMutation(api.users.syncBlockedApps);
   const completeNode = useMutation(api.training.completeNode);
   const generateMap = useMutation(api.training.generateTrainingMap);
   const updateProfile = useMutation(api.users.updateProfile);
-  const claimFuel = useMutation(api.activities.claimFuel);
   const purchaseItem = useMutation(api.store.purchaseItem);
   const equipItem = useMutation(api.store.equipItem);
+  const exchangeCoinsForFuel = useMutation(api.store.exchangeCoinsForFuel);
+  const fuelExchangeRates = useQuery(
+    api.store.getFuelExchangeRates,
+    isAuthenticated && isStoreScreen ? {} : "skip"
+  );
   const sendGift = useMutation(api.gifts.sendGift);
-  const creditCoins = useMutation(api.activities.creditCoins);
+  const summarizeVoiceNote = useAction(api.openai.summarizeVoiceNote);
+  const continueReflectiveSession = useAction(api.openai.continueReflectiveSession);
+  const createReflectiveRealtimeCall = useAction(api.openai.createReflectiveRealtimeCall);
+  const endRealtimeVoiceSession = useAction(api.openai.endRealtimeVoiceSession);
+  const recordRealtimeVoiceUsage = useMutation(api.voiceUsage.recordClientUsage);
+  const summarizeReflectiveSession = useAction(api.openai.summarizeReflectiveSession);
+  const saveCoachedSession = useMutation(api.sessions.saveCoachedSession);
   const claimGift = useMutation(api.gifts.claimGift);
   const syncStreakFreezeAllowance = useMutation(api.streaks.syncStreakFreezeAllowance);
   const generateFriendCode = useMutation(api.social.generateFriendCode);
@@ -1443,6 +1708,7 @@ export default function HomeScreen() {
   const sendFriendRequest = useMutation(api.social.sendFriendRequest);
 
   const canSyncFreezesRef = useRef(false);
+  const mapExpansionRequestedRef = useRef(false);
   useEffect(() => {
     canSyncFreezesRef.current = Boolean(isAuthenticated && profile?._id);
   }, [isAuthenticated, profile?._id]);
@@ -1465,6 +1731,12 @@ export default function HomeScreen() {
           await ensureProfile({
             displayName: name || undefined,
             goal: goalText || undefined,
+            persona,
+            difficultyLevel: difficulty,
+            baselineToxicMinutesPerDay: baselineScrollMinutes ?? undefined,
+            scrollReductionGoalPercent: scrollReductionPercent ?? undefined,
+            baselineSource: detectedUsage.source !== "none" ? "screen_time" : "manual",
+            ...(persona === "fitness" ? { movementLevel } : {}),
           });
           return;
         } catch (e) {
@@ -1477,30 +1749,177 @@ export default function HomeScreen() {
     return () => {
       cancelled = true;
     };
-  }, [isAuthenticated, authLoading, profile, ensureProfile, name, goalText]);
+  }, [
+    isAuthenticated,
+    authLoading,
+    profile,
+    ensureProfile,
+    name,
+    goalText,
+    persona,
+    difficulty,
+    baselineScrollMinutes,
+    scrollReductionPercent,
+    detectedUsage.source,
+    movementLevel,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isAuthenticated ||
+      !profile?.onboardingComplete ||
+      profile.welcomeBonusClaimedAt
+    ) return;
+
+    void claimWelcomeBonus({}).catch((e) => {
+      console.warn("[WelcomeBonus] Repair failed:", e);
+    });
+  }, [
+    isAuthenticated,
+    profile?.onboardingComplete,
+    profile?.welcomeBonusClaimedAt,
+    claimWelcomeBonus,
+  ]);
+
+  useEffect(() => {
+    if (
+      !isAuthenticated ||
+      !profile?.onboardingComplete ||
+      !profile.persona ||
+      mapProgress === undefined ||
+      mapProgress.length >= 30 ||
+      mapExpansionRequestedRef.current
+    ) return;
+
+    mapExpansionRequestedRef.current = true;
+    void generateMap({
+      persona: profile.persona,
+      ...(profile.persona === "fitness" && profile.movementLevel
+        ? { movementLevel: profile.movementLevel }
+        : {}),
+    }).catch((error) => {
+      mapExpansionRequestedRef.current = false;
+      console.warn("[TrainingMap] Could not expand to 30 days:", error);
+    });
+  }, [
+    generateMap,
+    isAuthenticated,
+    mapProgress,
+    profile?.movementLevel,
+    profile?.onboardingComplete,
+    profile?.persona,
+  ]);
 
   useEffect(() => {
     if (
       isAuthenticated &&
       profile &&
-      (screen === "auth" || screen === "splash" || screen === "welcome" || screen === "howYouEarn" || screen === "voltEconomy" || screen === "yourPath" || screen === "discountUpgrade" || screen === "finalPaywall")
+      (screen === "auth" || screen === "splash" || screen === "welcome" || screen === "howYouEarn" || screen === "voltEconomy" || screen === "yourPath" || screen === "finalPaywall")
     ) {
       if (profile.onboardingComplete) {
-        setScreen("today");
+        const redirectTimer = setTimeout(() => setScreen("today"), 0);
+        return () => clearTimeout(redirectTimer);
       }
     }
   }, [isAuthenticated, profile, screen]);
 
   const logoScale = useSharedValue(1);
   const bounce = useSharedValue(0);
-  const pulse = useSharedValue(1);
   const nodePulse = useSharedValue(1);
 
-  // Check Screen Time authorization on mount (iOS only)
+  // Check Screen Time authorization and restore the persisted private selection.
   useEffect(() => {
     if (!isIOS || !DeviceActivity) return;
-    const status = DeviceActivity.getAuthorizationStatus();
-    setScreenTimeAuth(status === 2 ? "approved" : status === 1 ? "denied" : "notDetermined");
+    const restoreTimer = setTimeout(() => {
+      const status = DeviceActivity?.getAuthorizationStatus() ?? 0;
+      setScreenTimeAuth(status === 2 ? "approved" : status === 1 ? "denied" : "notDetermined");
+      if (status !== 2 || !DeviceActivity) return;
+
+      const storedSelection = DeviceActivity.getFamilyActivitySelectionId(IOS_SHIELD_SELECTION_ID) ?? null;
+      setFamilySelection(storedSelection);
+      if (storedSelection) {
+        const metadata = DeviceActivity.activitySelectionMetadata({
+          activitySelectionId: IOS_SHIELD_SELECTION_ID,
+        });
+        if (metadata) {
+          setSelectionMeta({
+            apps: metadata.applicationCount,
+            categories: metadata.categoryCount,
+            domains: metadata.webDomainCount,
+          });
+        }
+      }
+    }, 0);
+    return () => clearTimeout(restoreTimer);
+  }, []);
+
+  const refreshShieldRuntime = useCallback(async () => {
+    try {
+      const runtime = await VoltShieldModule.getShieldRuntimeState();
+      setShieldEnabled(runtime.enabled);
+      setShieldUnlockUntil(runtime.unlockUntil > Date.now() ? runtime.unlockUntil : 0);
+      if (runtime.unlockUntil > 0 && runtime.unlockUntil <= Date.now()) {
+        await VoltShieldModule.setShieldUnlockUntil(0);
+      }
+    } catch (error) {
+      console.warn("[Shield] Could not restore runtime state:", error);
+    } finally {
+      setShieldRuntimeLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const restoreTimer = setTimeout(() => void refreshShieldRuntime(), 0);
+    const subscription = AppState.addEventListener("change", (nextState) => {
+      if (nextState === "active") void refreshShieldRuntime();
+    });
+    return () => {
+      clearTimeout(restoreTimer);
+      subscription.remove();
+    };
+  }, [refreshShieldRuntime]);
+
+  useEffect(() => {
+    if (!isProfileScreen) return;
+
+    const syncTimer = setTimeout(() => setShieldClock(Date.now()), 0);
+    if (shieldUnlockUntil <= Date.now()) {
+      return () => clearTimeout(syncTimer);
+    }
+
+    const timer = setInterval(() => {
+      const now = Date.now();
+      setShieldClock(now);
+      if (now >= shieldUnlockUntil) clearInterval(timer);
+    }, 1000);
+
+    return () => {
+      clearTimeout(syncTimer);
+      clearInterval(timer);
+    };
+  }, [isProfileScreen, shieldUnlockUntil]);
+
+  const readIosUsageMinutes = useCallback((): { todayMinutes: number; weekAvgMinutes: number; daysOfData: number } => {
+    if (!isIOS || !DeviceActivity) return { todayMinutes: 0, weekAvgMinutes: 0, daysOfData: 0 };
+    try {
+      const today = localDateKey(new Date());
+      const todayMinutes = (DeviceActivity.userDefaultsGet(`volt_usage_minutes_${today}`) as number) ?? 0;
+      let total = 0;
+      let daysWithData = 0;
+      for (let d = 0; d < 7; d++) {
+        const date = localDateKey(new Date(Date.now() - d * 86400000));
+        const val = DeviceActivity.userDefaultsGet(`volt_usage_minutes_${date}`) as number | null;
+        if (val != null && val > 0) {
+          total += val;
+          daysWithData++;
+        }
+      }
+      const weekAvgMinutes = daysWithData > 0 ? Math.round(total / daysWithData) : 0;
+      return { todayMinutes, weekAvgMinutes, daysOfData: daysWithData };
+    } catch (e) {
+      console.warn("[UsageMonitor] Read error:", e);
+      return { todayMinutes: 0, weekAvgMinutes: 0, daysOfData: 0 };
+    }
   }, []);
 
   // Auto-recalibrate baseline from real usage data (runs when user opens "today" screen)
@@ -1562,14 +1981,17 @@ export default function HomeScreen() {
   // Usage monitoring: re-read iOS usage data on app foreground
   useEffect(() => {
     if (!isIOS || !DeviceActivity || screenTimeAuth !== "approved") return;
-    const usage = readIosUsageMinutes();
-    if (usage.weekAvgMinutes > 0 && detectedUsage.source === "none") {
-      setDetectedUsage({ minutes: usage.weekAvgMinutes, source: "exact", daysOfData: usage.daysOfData });
-      if (baselineScrollMinutes == null) setBaselineScrollMinutes(snapToNearestChip(usage.weekAvgMinutes));
-    } else if (usage.todayMinutes > 0 && detectedUsage.source === "none") {
-      setDetectedUsage({ minutes: usage.todayMinutes, source: "partial", daysOfData: 0 });
-      if (baselineScrollMinutes == null) setBaselineScrollMinutes(snapToNearestChip(usage.todayMinutes));
-    }
+    const usageTimer = setTimeout(() => {
+      const usage = readIosUsageMinutes();
+      if (usage.weekAvgMinutes > 0 && detectedUsage.source === "none") {
+        setDetectedUsage({ minutes: usage.weekAvgMinutes, source: "exact", daysOfData: usage.daysOfData });
+        if (baselineScrollMinutes == null) setBaselineScrollMinutes(snapToNearestChip(usage.weekAvgMinutes));
+      } else if (usage.todayMinutes > 0 && detectedUsage.source === "none") {
+        setDetectedUsage({ minutes: usage.todayMinutes, source: "partial", daysOfData: 0 });
+        if (baselineScrollMinutes == null) setBaselineScrollMinutes(snapToNearestChip(usage.todayMinutes));
+      }
+    }, 0);
+    return () => clearTimeout(usageTimer);
   }, [screenTimeAuth, readIosUsageMinutes, detectedUsage.source, baselineScrollMinutes]);
 
   const refreshAndroidShieldPermissions = useCallback(async () => {
@@ -1598,7 +2020,11 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!isAndroid) return;
-    void refreshAndroidShieldPermissions();
+    const permissionsTimer = setTimeout(
+      () => void refreshAndroidShieldPermissions(),
+      0,
+    );
+    return () => clearTimeout(permissionsTimer);
   }, [refreshAndroidShieldPermissions]);
 
   useEffect(() => {
@@ -1617,21 +2043,30 @@ export default function HomeScreen() {
 
   // RevenueCat — identity + listener + preload offerings
   useEffect(() => {
-    if (isAuthenticated && profile?._id) {
-      void rcLogin(profile._id).then((info) => {
-        if (!info || !hasEntitlement(info)) return;
-        setIsPro(true);
+    if (!isAuthenticated || !profile?._id || !isConfigured()) {
+      queueMicrotask(() => setSubscriptionExpired(false));
+      return;
+    }
+    void rcLogin(profile._id).then((info) => {
+      if (!info) return;
+      const pro = hasEntitlement(info);
+      setIsPro(pro);
+      setSubscriptionExpired(Boolean(profile.onboardingComplete && hasEntitlementHistory(info) && !pro));
+      if (pro) {
         const bp = getActiveBillingPeriod(info);
         setBillingPeriod(bp);
         if (bp) void syncStreakFreezeAllowance({ billingPeriod: bp });
-      });
-    }
-  }, [isAuthenticated, profile?._id, syncStreakFreezeAllowance]);
+      } else {
+        setBillingPeriod(null);
+      }
+    });
+  }, [isAuthenticated, profile?._id, profile?.onboardingComplete, syncStreakFreezeAllowance]);
 
   useEffect(() => {
     const remove = addCustomerInfoListener((info) => {
       const pro = hasEntitlement(info);
       setIsPro(pro);
+      setSubscriptionExpired(Boolean(isAuthenticated && profile?.onboardingComplete && hasEntitlementHistory(info) && !pro));
       if (pro) {
         const bp = getActiveBillingPeriod(info);
         setBillingPeriod(bp);
@@ -1645,25 +2080,52 @@ export default function HomeScreen() {
     return () => {
       remove();
     };
-  }, [syncStreakFreezeAllowance]);
+  }, [isAuthenticated, profile?.onboardingComplete, syncStreakFreezeAllowance]);
 
   useEffect(() => {
-    if (screen !== "upgrade" && screen !== "yourPath") return;
+    const needsRc =
+      screen === "upgrade" ||
+      screen === "yourPath" ||
+      screen === "finalPaywall";
+    if (!needsRc) return;
     getOfferings().then((offering) => {
       if (!offering) return;
       const pkgs: PurchasesPackage[] = [];
-      if (offering.annual) pkgs.push(offering.annual);
       if (offering.monthly) pkgs.push(offering.monthly);
       if (offering.weekly) pkgs.push(offering.weekly);
       if (pkgs.length === 0 && offering.availablePackages.length > 0) {
         pkgs.push(...offering.availablePackages);
       }
-      setRcPackages(pkgs);
-    });
-    getDiscountOffering().then((offering) => {
-      if (!offering) return;
-      const pkg = offering.annual ?? offering.availablePackages[0] ?? null;
-      setDiscountPackage(pkg);
+      const currentPkgs = pkgs.filter((pkg) => {
+        if (pkg.identifier === "$rc_weekly") {
+          return pkg.product.identifier === STORE_PRODUCT_IDS.weekly;
+        }
+        if (pkg.identifier === "$rc_monthly") {
+          return pkg.product.identifier === STORE_PRODUCT_IDS.monthly;
+        }
+        return false;
+      });
+      if (__DEV__) {
+        const monthly = pkgs.find((p) => p.identifier === "$rc_monthly");
+        const weekly = pkgs.find((p) => p.identifier === "$rc_weekly");
+        if (monthly && monthly.product.identifier !== STORE_PRODUCT_IDS.monthly) {
+          console.warn(
+            "[RC] $rc_monthly product id mismatch — expected",
+            STORE_PRODUCT_IDS.monthly,
+            "got",
+            monthly.product.identifier
+          );
+        }
+        if (weekly && weekly.product.identifier !== STORE_PRODUCT_IDS.weekly) {
+          console.warn(
+            "[RC] $rc_weekly product id mismatch — expected",
+            STORE_PRODUCT_IDS.weekly,
+            "got",
+            weekly.product.identifier
+          );
+        }
+      }
+      setRcPackages(currentPkgs);
     });
   }, [screen]);
 
@@ -1736,9 +2198,10 @@ export default function HomeScreen() {
   const openIosShieldPicker = useCallback(async () => {
     if (screenTimeAuth !== "approved") {
       if (screenTimeAuth === "denied") {
-        Linking.openSettings();
+        await Linking.openSettings();
       } else {
-        await requestScreenTimeAuth();
+        const result = await requestScreenTimeAuth();
+        if (result === "approved") setIosShieldPickerVisible(true);
       }
       return;
     }
@@ -1747,15 +2210,34 @@ export default function HomeScreen() {
 
   const openAndroidShieldModal = useCallback(async () => {
     await refreshAndroidShieldPermissions();
-    setAndroidShieldModalVisible(true);
-  }, [refreshAndroidShieldPermissions]);
+    if (isProfileScreen) setBlockedAppsVisible(true);
+    else setAndroidShieldModalVisible(true);
+  }, [isProfileScreen, refreshAndroidShieldPermissions]);
 
   useEffect(() => {
-    logoScale.set(withRepeat(withTiming(1.06, { duration: 1200 }), -1, true));
-    bounce.set(withRepeat(withTiming(-10, { duration: 800 }), -1, true));
-    pulse.set(withRepeat(withTiming(1.1, { duration: 1000 }), -1, true));
-    nodePulse.set(withRepeat(withTiming(0.3, { duration: 900 }), -1, true));
-  }, [logoScale, bounce, pulse, nodePulse]);
+    cancelAnimation(logoScale);
+    cancelAnimation(bounce);
+    cancelAnimation(nodePulse);
+    logoScale.set(1);
+    bounce.set(0);
+    nodePulse.set(1);
+
+    if (screen === "splash") {
+      logoScale.set(withRepeat(withTiming(1.06, { duration: 1200 }), -1, true));
+    }
+    if (screen === "onboarding1" || screen === "upgrade") {
+      bounce.set(withRepeat(withTiming(-10, { duration: 800 }), -1, true));
+    }
+    if (screen === "train") {
+      nodePulse.set(withRepeat(withTiming(0.3, { duration: 900 }), -1, true));
+    }
+
+    return () => {
+      cancelAnimation(logoScale);
+      cancelAnimation(bounce);
+      cancelAnimation(nodePulse);
+    };
+  }, [bounce, logoScale, nodePulse, screen]);
 
   useEffect(() => {
     if (screen !== "splash") return;
@@ -1768,10 +2250,6 @@ export default function HomeScreen() {
     }, 2200);
     return () => clearTimeout(t);
   }, [screen, isAuthenticated]);
-
-  useEffect(() => {
-    if (screen !== "learningCentre") setLearningTopicKey(null);
-  }, [screen]);
 
   const logoStyle = useAnimatedStyle(() => ({ transform: [{ scale: logoScale.get() }] }));
   const bounceStyle = useAnimatedStyle(() => ({ transform: [{ translateY: bounce.get() }] }));
@@ -1788,14 +2266,18 @@ export default function HomeScreen() {
     [screen]
   );
 
-  const swipe = Gesture.Pan()
-    .runOnJS(true)
-    .activeOffsetX([-24, 24])
-    .failOffsetY([-14, 14])
-    .onEnd(({ translationX, velocityX }) => {
-      if (translationX <= -60 || velocityX <= -700) goAdj(1);
-      else if (translationX >= 60 || velocityX >= 700) goAdj(-1);
-    });
+  const swipe = useMemo(
+    () =>
+      Gesture.Pan()
+        .runOnJS(true)
+        .activeOffsetX([-24, 24])
+        .failOffsetY([-14, 14])
+        .onEnd(({ translationX, velocityX }) => {
+          if (translationX <= -60 || velocityX <= -700) goAdj(1);
+          else if (translationX >= 60 || velocityX >= 700) goAdj(-1);
+        }),
+    [goAdj],
+  );
 
   const tabPress = useCallback(
     (tab: TabKey) => {
@@ -1843,7 +2325,7 @@ export default function HomeScreen() {
     try {
       DeviceActivity.updateShieldWithId(
         VAULT_SHIELD_UI,
-        { primary: { behavior: "close" } },
+        { primary: { behavior: "close", actions: [{ type: "openApp" }] } },
         "volt_shield"
       );
     } catch (e) {
@@ -1861,10 +2343,44 @@ export default function HomeScreen() {
   );
   const getTargetReps = useCallback((act: ActivityItem) => {
     const configured = CAMERA_TARGET_REPS[act.key];
-    if (configured) return configured;
+    if (configured) return Math.max(1, Math.round(configured * DIFFICULTY_EFFORT_MULT[profileDifficulty]));
     const fromFormula = Number.parseInt(act.effortLabel, 10);
-    return Number.isNaN(fromFormula) ? 10 : fromFormula;
-  }, []);
+    return Number.isNaN(fromFormula)
+      ? 10
+      : Math.max(1, Math.round(fromFormula * DIFFICULTY_EFFORT_MULT[profileDifficulty]));
+  }, [profileDifficulty]);
+
+  const previewReward = useCallback(
+    (activityKey: string, distance?: number) =>
+      computeActivityReward(economyProfile, activityKey, { distance }),
+    [economyProfile],
+  );
+
+  const scaledEffortLabel = useCallback((act: ActivityItem) => {
+    const amount = Number.parseFloat(act.effortLabel);
+    if (!Number.isFinite(amount) || act.key === "run") return act.effortLabel;
+    const scaled = Math.max(1, Math.round(amount * DIFFICULTY_EFFORT_MULT[profileDifficulty]));
+    return act.effortLabel.replace(/^\d+(?:\.\d+)?/, String(scaled));
+  }, [profileDifficulty]);
+
+  const recordActivity = useCallback(async (
+    activityName: string,
+    activityKey: string,
+    metadata?: {
+      distance?: number;
+      reps?: number;
+      duration?: number;
+      note?: string;
+      transcript?: string;
+      summary?: string;
+      voiceUri?: string;
+      coachSessionId?: string;
+    },
+  ) => {
+    const result = await logActivity({ type: activityKey, metadata });
+    setRewardCelebration({ activityName, ...result });
+    return result;
+  }, [logActivity]);
 
   const handleAuth = useCallback(async () => {
     if (authSubmitting) return;
@@ -1885,7 +2401,22 @@ export default function HomeScreen() {
   }, [authMode, email, password, name, signIn, authSubmitting]);
 
   const handleLogActivity = useCallback(
-    async (act: ActivityItem, options?: { skipCameraGate?: boolean; skipGPSGate?: boolean; skipBreathGate?: boolean; skipGuidedGate?: boolean }) => {
+    async (act: ActivityItem, options?: {
+      skipCameraGate?: boolean;
+      skipGPSGate?: boolean;
+      skipBreathGate?: boolean;
+      skipGuidedGate?: boolean;
+      metadata?: {
+        distance?: number;
+        reps?: number;
+        duration?: number;
+        note?: string;
+        transcript?: string;
+        summary?: string;
+        voiceUri?: string;
+        coachSessionId?: string;
+      };
+    }) => {
       if (act.verificationMethod === "gps" && !options?.skipGPSGate) {
         setActiveGPSSession(true);
         return;
@@ -1902,69 +2433,51 @@ export default function HomeScreen() {
         !options?.skipGuidedGate &&
         ["timer", "guided", "self-report", "tap"].includes(act.verificationMethod)
       ) {
+        setActiveCoachTrigger(undefined);
         setActiveGuidedActivity(act);
         return;
       }
       try {
-        const dur = act.effortDurationSec ?? 0;
-        const reward = dur > 0
-          ? computeScaledReward(economyProfile, act.category as EconCategory, dur)
-          : computeReward(economyProfile, act.category as EconCategory);
-        const coins = dur > 0
-          ? scaledCoinRewardForActivity(economyProfile, act.category as EconCategory, dur)
-          : coinRewardForActivity(economyProfile, act.category as EconCategory);
-        await logActivity({
-          type: act.key,
-          dpEarned: reward.vp,
-          minutesEarned: reward.minutes,
-          verificationMethod: act.verificationMethod,
-        });
-        const isBeast = economyProfile.difficulty === "beast";
-        Alert.alert(
-          isBeast ? "Beast Mode Fuel!" : "Fuel Earned!",
-          `+${reward.minutes} min, +${reward.vp} VP, +${coins} coins${isBeast ? " (1.5x VP bonus)" : ""}`
-        );
+        await recordActivity(act.name, act.key, options?.metadata);
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : "Failed to log activity";
         Alert.alert("Error", msg);
       }
     },
-    [logActivity, economyProfile]
+    [recordActivity]
   );
 
   const setupScreenTimeBlocking = useCallback(() => {
     if (!isIOS || !DeviceActivity || !familySelection) return;
-    const SELECTION_ID = "volt_vault_selection";
     const SHIELD_ID = "volt_shield";
-    const ACTIVITY_NAME = "volt_app_block";
     try {
       DeviceActivity.setFamilyActivitySelectionId({
-        id: SELECTION_ID,
+        id: IOS_SHIELD_SELECTION_ID,
         familyActivitySelection: familySelection,
       });
 
       DeviceActivity.updateShieldWithId(
         VAULT_SHIELD_UI,
         {
-          primary: { behavior: "close" },
+          primary: { behavior: "close", actions: [{ type: "openApp" }] },
         },
         SHIELD_ID
       );
 
       DeviceActivity.configureActions({
-        activityName: ACTIVITY_NAME,
+        activityName: IOS_SHIELD_ACTIVITY_NAME,
         callbackName: "intervalDidStart",
-        actions: [{ type: "blockSelection", familyActivitySelectionId: SELECTION_ID, shieldId: SHIELD_ID }],
+        actions: [{ type: "blockSelection", familyActivitySelectionId: IOS_SHIELD_SELECTION_ID, shieldId: SHIELD_ID }],
       });
 
       DeviceActivity.configureActions({
-        activityName: ACTIVITY_NAME,
+        activityName: IOS_SHIELD_ACTIVITY_NAME,
         callbackName: "intervalDidEnd",
-        actions: [{ type: "unblockSelection", familyActivitySelectionId: SELECTION_ID }],
+        actions: [{ type: "unblockSelection", familyActivitySelectionId: IOS_SHIELD_SELECTION_ID }],
       });
 
       // Block all day, repeating — user earns unlocks through activities
-      DeviceActivity.startMonitoring(ACTIVITY_NAME, {
+      DeviceActivity.startMonitoring(IOS_SHIELD_ACTIVITY_NAME, {
         intervalStart: { hour: 0, minute: 0 },
         intervalEnd: { hour: 23, minute: 59 },
         repeats: true,
@@ -1976,8 +2489,6 @@ export default function HomeScreen() {
 
   const startUsageMonitoring = useCallback(() => {
     if (!isIOS || !DeviceActivity || !familySelection) return;
-    const USAGE_ACTIVITY = "volt_usage_track";
-    const SELECTION_ID = "volt_vault_selection";
     try {
       const thresholdEvents = [];
       for (let m = 15; m <= 480; m += 15) {
@@ -1991,10 +2502,10 @@ export default function HomeScreen() {
         });
       }
       DeviceActivity.setFamilyActivitySelectionId({
-        id: SELECTION_ID,
+        id: IOS_SHIELD_SELECTION_ID,
         familyActivitySelection: familySelection,
       });
-      DeviceActivity.startMonitoring(USAGE_ACTIVITY, {
+      DeviceActivity.startMonitoring(IOS_USAGE_ACTIVITY_NAME, {
         intervalStart: { hour: 0, minute: 0 },
         intervalEnd: { hour: 23, minute: 59 },
         repeats: true,
@@ -2005,33 +2516,10 @@ export default function HomeScreen() {
     }
   }, [familySelection]);
 
-  const readIosUsageMinutes = useCallback((): { todayMinutes: number; weekAvgMinutes: number; daysOfData: number } => {
-    if (!isIOS || !DeviceActivity) return { todayMinutes: 0, weekAvgMinutes: 0, daysOfData: 0 };
-    try {
-      const today = new Date().toISOString().slice(0, 10);
-      const todayMinutes = (DeviceActivity.userDefaultsGet(`volt_usage_minutes_${today}`) as number) ?? 0;
-      let total = 0;
-      let daysWithData = 0;
-      for (let d = 0; d < 7; d++) {
-        const date = new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
-        const val = DeviceActivity.userDefaultsGet(`volt_usage_minutes_${date}`) as number | null;
-        if (val != null && val > 0) {
-          total += val;
-          daysWithData++;
-        }
-      }
-      const weekAvgMinutes = daysWithData > 0 ? Math.round(total / daysWithData) : 0;
-      return { todayMinutes, weekAvgMinutes, daysOfData: daysWithData };
-    } catch (e) {
-      console.warn("[UsageMonitor] Read error:", e);
-      return { todayMinutes: 0, weekAvgMinutes: 0, daysOfData: 0 };
-    }
-  }, []);
-
   const unblockVaultApps = useCallback(() => {
     if (!isIOS || !DeviceActivity) return;
     try {
-      DeviceActivity.unblockSelection({ activitySelectionId: "volt_vault_selection" });
+      DeviceActivity.unblockSelection({ activitySelectionId: IOS_SHIELD_SELECTION_ID });
     } catch (e) {
       console.warn("Unblock error:", e);
     }
@@ -2040,11 +2528,133 @@ export default function HomeScreen() {
   const reblockVaultApps = useCallback(() => {
     if (!isIOS || !DeviceActivity) return;
     try {
-      DeviceActivity.blockSelection({ activitySelectionId: "volt_vault_selection" });
+      DeviceActivity.blockSelection({ activitySelectionId: IOS_SHIELD_SELECTION_ID });
     } catch (e) {
       console.warn("Reblock error:", e);
     }
   }, []);
+
+  const scheduleIosTimedUnlock = useCallback(async (unlockUntil: number) => {
+    if (!isIOS || !DeviceActivity || !familySelection) return;
+    const start = new Date(Date.now() + 1500);
+    const end = new Date(unlockUntil);
+    DeviceActivity.stopMonitoring([IOS_UNLOCK_ACTIVITY_NAME]);
+    DeviceActivity.configureActions({
+      activityName: IOS_UNLOCK_ACTIVITY_NAME,
+      callbackName: "intervalDidStart",
+      actions: [{ type: "unblockSelection", familyActivitySelectionId: IOS_SHIELD_SELECTION_ID }],
+    });
+    DeviceActivity.configureActions({
+      activityName: IOS_UNLOCK_ACTIVITY_NAME,
+      callbackName: "intervalDidEnd",
+      actions: [{
+        type: "blockSelection",
+        familyActivitySelectionId: IOS_SHIELD_SELECTION_ID,
+        shieldId: "volt_shield",
+      }],
+    });
+    await DeviceActivity.startMonitoring(
+      IOS_UNLOCK_ACTIVITY_NAME,
+      {
+        intervalStart: iosScheduleComponents(start),
+        intervalEnd: iosScheduleComponents(end),
+        repeats: false,
+      },
+      [],
+    );
+    unblockVaultApps();
+  }, [familySelection, unblockVaultApps]);
+
+  const commitIosShieldSelection = useCallback(() => {
+    setIosShieldPickerVisible(false);
+    const hasSelection = Boolean(
+      familySelection && selectionMeta.apps + selectionMeta.categories + selectionMeta.domains > 0,
+    );
+    if (!hasSelection) {
+      if (DeviceActivity) {
+        DeviceActivity.stopMonitoring([IOS_SHIELD_ACTIVITY_NAME, IOS_USAGE_ACTIVITY_NAME, IOS_UNLOCK_ACTIVITY_NAME]);
+        unblockVaultApps();
+      }
+      void VoltShieldModule.setShieldUnlockUntil(0);
+      setShieldUnlockUntil(0);
+      return;
+    }
+    void VoltShieldModule.setShieldEnabled(true);
+    setShieldEnabled(true);
+    setupScreenTimeBlocking();
+    startUsageMonitoring();
+    if (shieldUnlockUntil <= Date.now()) reblockVaultApps();
+  }, [familySelection, reblockVaultApps, selectionMeta, setupScreenTimeBlocking, shieldUnlockUntil, startUsageMonitoring, unblockVaultApps]);
+
+  const setShieldActive = useCallback(async (enabled: boolean) => {
+    try {
+      await VoltShieldModule.setShieldEnabled(enabled);
+      setShieldEnabled(enabled);
+      if (!enabled) {
+        await VoltShieldModule.setShieldUnlockUntil(0);
+        setShieldUnlockUntil(0);
+        if (isIOS && DeviceActivity) {
+          DeviceActivity.stopMonitoring([IOS_SHIELD_ACTIVITY_NAME, IOS_UNLOCK_ACTIVITY_NAME]);
+          unblockVaultApps();
+        }
+        return;
+      }
+
+      if (isIOS) {
+        setupScreenTimeBlocking();
+        if (shieldUnlockUntil <= Date.now()) reblockVaultApps();
+      } else if (isAndroid) {
+        await VoltShieldModule.setBlockedPackages(androidBlockedPackages);
+      }
+    } catch (error) {
+      Alert.alert("Shield error", error instanceof Error ? error.message : "Could not update the shield.");
+    }
+  }, [androidBlockedPackages, reblockVaultApps, setupScreenTimeBlocking, shieldUnlockUntil, unblockVaultApps]);
+
+  const beginShieldUnlock = useCallback(async (minutes: number) => {
+    if (!shieldEnabled) {
+      Alert.alert("Shield paused", "Turn the shield on before starting an unlock window.");
+      return;
+    }
+    if (profileMinutes < minutes) {
+      Alert.alert("Not enough fuel", `You need ${minutes} fuel minutes for this unlock.`);
+      return;
+    }
+
+    try {
+      await claimFuel({ minutes });
+      const unlockUntil = Date.now() + minutes * 60_000;
+      await VoltShieldModule.setShieldUnlockUntil(unlockUntil);
+      if (isIOS) await scheduleIosTimedUnlock(unlockUntil);
+      setShieldUnlockUntil(unlockUntil);
+      setShieldClock(Date.now());
+    } catch (error) {
+      if (isIOS) reblockVaultApps();
+      Alert.alert("Unlock error", error instanceof Error ? error.message : "Could not start the unlock window.");
+    }
+  }, [claimFuel, profileMinutes, reblockVaultApps, scheduleIosTimedUnlock, shieldEnabled]);
+
+  useEffect(() => {
+    if (!shieldEnabled || shieldUnlockUntil <= 0) return;
+    const delay = Math.max(0, shieldUnlockUntil - Date.now());
+    const expiryTimer = setTimeout(() => {
+      setShieldUnlockUntil(0);
+      void VoltShieldModule.setShieldUnlockUntil(0);
+      if (isIOS) reblockVaultApps();
+    }, delay);
+    return () => clearTimeout(expiryTimer);
+  }, [reblockVaultApps, shieldEnabled, shieldUnlockUntil]);
+
+  useEffect(() => {
+    if (
+      shieldRuntimeLoading ||
+      !shieldEnabled ||
+      shieldUnlockUntil > Date.now() ||
+      !familySelection ||
+      selectionMeta.apps + selectionMeta.categories + selectionMeta.domains === 0
+    ) return;
+    if (isIOS) reblockVaultApps();
+  }, [familySelection, reblockVaultApps, selectionMeta, shieldEnabled, shieldRuntimeLoading, shieldUnlockUntil]);
 
   const handleCompleteOnboarding = useCallback(async () => {
     if (isAuthenticated) {
@@ -2060,7 +2670,7 @@ export default function HomeScreen() {
         ...(persona === "fitness" ? { movementLevel } : {}),
       });
       await syncBlockedApps({ apps: syncedBlockedAppsPayload });
-      try { await claimWelcomeBonus({}); } catch {}
+      await claimWelcomeBonus({});
       try {
         await generateMap({
           persona,
@@ -2070,6 +2680,10 @@ export default function HomeScreen() {
       if (isAndroid) {
         await VoltShieldModule.setBlockedPackages(androidBlockedPackages);
       }
+      await VoltShieldModule.setShieldEnabled(true);
+      await VoltShieldModule.setShieldUnlockUntil(0);
+      setShieldEnabled(true);
+      setShieldUnlockUntil(0);
       setupScreenTimeBlocking();
       startUsageMonitoring();
       setShowVpClaim(true);
@@ -2098,54 +2712,40 @@ export default function HomeScreen() {
     detectedUsage.source,
   ]);
 
-  const handleShowRCPaywall = useCallback(async () => {
-    setPurchasing(true);
-    const { purchased, restored } = await presentPaywall();
-    setPurchasing(false);
-    if (purchased || restored) {
-      setIsPro(true);
-      handleCompleteOnboarding();
+  const handlePurchasedPackage = useCallback(async (pkg: PurchasesPackage) => {
+    try {
+      setPurchasing(true);
+      const result = await purchasePackage(pkg);
+      if (result.success) {
+        setIsPro(true);
+        setSubscriptionExpired(false);
+        const period = result.customerInfo
+          ? getActiveBillingPeriod(result.customerInfo)
+          : null;
+        if (period) {
+          setBillingPeriod(period);
+          await syncStreakFreezeAllowance({ billingPeriod: period });
+        }
+        await handleCompleteOnboarding();
+      } else if (result.error) {
+        Alert.alert("Purchase Error", result.error);
+      }
+    } catch (e) {
+      Alert.alert("Account setup error", e instanceof Error ? e.message : "Your purchase succeeded, but we could not finish setting up your account.");
+    } finally {
+      setPurchasing(false);
     }
-  }, [handleCompleteOnboarding]);
+  }, [handleCompleteOnboarding, syncStreakFreezeAllowance]);
 
   const handlePurchase = useCallback(async () => {
-    const identifierMap: Record<string, string> = {
-      yearly: "$rc_annual",
-      monthly: "$rc_monthly",
-      weekly: "$rc_weekly",
-    };
-    const target = identifierMap[selectedPlan];
-    const pkg = rcPackages.find((p) => p.identifier === target) ?? rcPackages[0];
+    const target = PACKAGE_IDENTIFIER_BY_PERIOD[selectedPlan];
+    const pkg = rcPackages.find((p) => p.identifier === target);
     if (!pkg) {
-      handleShowRCPaywall();
+      Alert.alert("Plan unavailable", `The ${selectedPlan} plan is not available right now. Please choose another plan.`);
       return;
     }
-    setPurchasing(true);
-    const result = await purchasePackage(pkg);
-    setPurchasing(false);
-    if (result.success) {
-      setIsPro(true);
-      handleCompleteOnboarding();
-    } else if (result.error) {
-      Alert.alert("Purchase Error", result.error);
-    }
-  }, [rcPackages, selectedPlan, handleCompleteOnboarding, handleShowRCPaywall]);
-
-  const handleDiscountPurchase = useCallback(async () => {
-    if (!discountPackage) {
-      handleShowRCPaywall();
-      return;
-    }
-    setPurchasing(true);
-    const result = await purchasePackage(discountPackage);
-    setPurchasing(false);
-    if (result.success) {
-      setIsPro(true);
-      handleCompleteOnboarding();
-    } else if (result.error) {
-      Alert.alert("Purchase Error", result.error);
-    }
-  }, [discountPackage, handleCompleteOnboarding, handleShowRCPaywall]);
+    await handlePurchasedPackage(pkg);
+  }, [rcPackages, selectedPlan, handlePurchasedPackage]);
 
   const handleRestore = useCallback(async () => {
     setPurchasing(true);
@@ -2153,71 +2753,53 @@ export default function HomeScreen() {
     setPurchasing(false);
     if (result.success) {
       setIsPro(true);
+      setSubscriptionExpired(false);
+      const period = result.customerInfo
+        ? getActiveBillingPeriod(result.customerInfo)
+        : null;
+      if (period) {
+        setBillingPeriod(period);
+        await syncStreakFreezeAllowance({ billingPeriod: period });
+      }
       Alert.alert("Restored!", "Your Volt Pro subscription has been restored.", [
-        { text: "OK", onPress: handleCompleteOnboarding },
+        { text: "OK", onPress: () => void handleCompleteOnboarding() },
       ]);
     } else {
       Alert.alert("No Subscription", result.error ?? "No active subscription found to restore.");
     }
-  }, [handleCompleteOnboarding]);
+  }, [handleCompleteOnboarding, syncStreakFreezeAllowance]);
 
   const handleClosePaywall = useCallback(() => {
-    setScreen("discountUpgrade");
-  }, []);
-
-  const handleCloseDiscountPaywall = useCallback(() => {
-    setSelectedPlan("weekly");
     setScreen("finalPaywall");
   }, []);
 
   const handleFinalPurchase = useCallback(async () => {
-    const identifierMap: Record<string, string> = {
-      monthly: "$rc_monthly",
-      weekly: "$rc_weekly",
-    };
-    const target = identifierMap[selectedPlan] ?? "$rc_weekly";
-    const pkg = rcPackages.find((p) => p.identifier === target) ?? rcPackages[0];
+    const target = PACKAGE_IDENTIFIER_BY_PERIOD[selectedPlan];
+    const pkg = rcPackages.find((p) => p.identifier === target);
     if (!pkg) {
-      handleShowRCPaywall();
+      Alert.alert("Plan unavailable", `The ${selectedPlan} plan is not available right now. Please choose another plan.`);
       return;
     }
-    setPurchasing(true);
-    const result = await purchasePackage(pkg);
-    setPurchasing(false);
-    if (result.success) {
-      setIsPro(true);
-      handleCompleteOnboarding();
-    } else if (result.error) {
-      Alert.alert("Purchase Error", result.error);
-    }
-  }, [rcPackages, selectedPlan, handleCompleteOnboarding, handleShowRCPaywall]);
+    await handlePurchasedPackage(pkg);
+  }, [rcPackages, selectedPlan, handlePurchasedPackage]);
 
   const handleObCta = useCallback(async () => {
     const idx = onboardingScreens.indexOf(screen);
     if (idx === 1) {
-      setDifficulty(PERSONA_DIFFICULTY_DEFAULT[persona]);
+      const defaultDifficulty = PERSONA_DIFFICULTY_DEFAULT[persona];
       const firstGoal = PERSONA_GOALS[persona].goals[0];
-      if (!goalText) setGoalText(firstGoal);
-    }
-    if (idx === 2) {
-      if (isIOS) {
-        if (screenTimeAuth === "approved") {
-          // already approved — just advance
-        } else {
-          const result = await requestScreenTimeAuth();
-          if (result !== "approved") return;
-        }
-      } else if (isAndroid) {
-        if (!androidUsageAccessGranted) {
-          try {
-            await VoltShieldModule.openUsageAccessSettings();
-          } catch {}
-          await refreshAndroidShieldPermissions();
-          return;
-        }
-      }
+      const selectedGoal = PERSONA_GOALS[persona].goals.includes(goalText)
+        ? goalText
+        : firstGoal;
+      setDifficulty(defaultDifficulty);
+      setGoalText(selectedGoal);
+      setScrollReductionPercent(difficultyReductionPercent(defaultDifficulty));
     }
     if (idx === 3) {
+      setBaselineScrollMinutes((current) => current ?? 60);
+      setScrollReductionPercent(difficultyReductionPercent(difficulty));
+    }
+    if (idx === 4) {
       if (isIOS) {
         if (!familySelection) {
           await openIosShieldPicker();
@@ -2260,9 +2842,6 @@ export default function HomeScreen() {
         }
       }
     }
-    if (idx === 7 && isAuthenticated) {
-      try { await claimWelcomeBonus({}); } catch {}
-    }
     if (idx < onboardingScreens.length - 1) {
       goAdj(1);
     } else if (isAuthenticated) {
@@ -2273,18 +2852,15 @@ export default function HomeScreen() {
   }, [
     screen,
     isAuthenticated,
-    claimWelcomeBonus,
     goAdj,
     goTo,
     persona,
+    difficulty,
     goalText,
     familySelection,
     openIosShieldPicker,
     openAndroidShieldModal,
     refreshAndroidShieldPermissions,
-    requestScreenTimeAuth,
-    screenTimeAuth,
-    androidUsageAccessGranted,
     androidBlockedPackages,
     startUsageMonitoring,
     readIosUsageMinutes,
@@ -2309,19 +2885,22 @@ export default function HomeScreen() {
 
   useEffect(() => {
     if (!blockedApps || blockedApps.length === 0) return;
-    setLockedApps((prev) => {
-      const next = { ...DEFAULT_LOCKED_APPS };
-      for (const app of blockedApps) {
-        if (app.appName in next) {
-          next[app.appName as ShieldAppName] = app.isLocked;
+    const syncTimer = setTimeout(() => {
+      setLockedApps((prev) => {
+        const next = { ...DEFAULT_LOCKED_APPS };
+        for (const app of blockedApps) {
+          if (app.appName in next) {
+            next[app.appName as ShieldAppName] = app.isLocked;
+          }
         }
-      }
 
-      const unchanged = (Object.keys(next) as ShieldAppName[]).every(
-        (name) => prev[name] === next[name]
-      );
-      return unchanged ? prev : next;
-    });
+        const unchanged = (Object.keys(next) as ShieldAppName[]).every(
+          (name) => prev[name] === next[name]
+        );
+        return unchanged ? prev : next;
+      });
+    }, 0);
+    return () => clearTimeout(syncTimer);
   }, [blockedApps]);
 
   useEffect(() => {
@@ -2354,16 +2933,16 @@ export default function HomeScreen() {
     [profilePersona, profile?.goal, goalText, resolvedMovementLevel, economyProfile],
   );
 
-  const mapNodes = (() => {
+  const mapNodes = useMemo(() => {
     if (mapProgress && mapProgress.length > 0) {
-      return mapProgress
+      return [...mapProgress]
         .sort((a, b) => a.nodeId - b.nodeId)
         .map((n) => {
           const fallback = personaSection[n.nodeId - 1];
           const actKeys: string[] = n.activityKeys ?? fallback?.activityKeys ?? [];
           const firstAct = actKeys.length > 0 ? ACTIVITY_LOOKUP[actKeys[0]] : undefined;
           const nType = n.nodeType ?? fallback?.nodeType ?? "regular";
-          const icon: keyof typeof MaterialIcons.glyphMap =
+          const icon: MaterialIconName =
             nType === "chest" ? "card-giftcard" : nType === "boss" ? "star" : nType === "rest" ? "spa" : firstAct?.icon ?? "check-circle";
           return {
             id: n.nodeId,
@@ -2373,13 +2952,14 @@ export default function HomeScreen() {
             reward: `+${n.dp ?? fallback?.dp ?? 20} VP`,
             activity: n.desc ?? fallback?.desc ?? "Complete the challenge",
             activityKeys: actKeys,
+            completedActivityKeys: n.completedActivityKeys ?? [],
             nodeType: nType,
           };
         });
     }
     return personaSection.map((def, i) => {
       const firstAct = def.activityKeys.length > 0 ? ACTIVITY_LOOKUP[def.activityKeys[0]] : undefined;
-      const icon: keyof typeof MaterialIcons.glyphMap =
+      const icon: MaterialIconName =
         def.nodeType === "chest" ? "card-giftcard" : def.nodeType === "boss" ? "star" : def.nodeType === "rest" ? "spa" : firstAct?.icon ?? "check-circle";
       return {
         id: i + 1,
@@ -2389,32 +2969,37 @@ export default function HomeScreen() {
         reward: `+${def.dp} VP`,
         activity: def.desc,
         activityKeys: def.activityKeys,
+        completedActivityKeys: [],
         nodeType: def.nodeType,
       };
     });
-  })();
+  }, [mapProgress, personaSection]);
 
-  const leaderboard = rankings
-    ? rankings.map((r) => ({
-        rank: r.rank,
-        userId: (r as any).userId as string | undefined,
-        name: r.name,
-        title: r.title,
-        dp: r.dp,
-        img: r.avatarUrl ?? IMG.lb1,
-        you: r.isYou,
-        dim: false,
-        persona: (r as any).persona as string | undefined,
-        difficultyLevel: (r as any).difficultyLevel as string | undefined,
-        equippedSkin: (r as any).equippedSkin as string | undefined,
-        inPromotionZone: (r as any).inPromotionZone as boolean | undefined,
-        inDemotionZone: (r as any).inDemotionZone as boolean | undefined,
-        avatarUrl: r.avatarUrl as string | undefined,
-      }))
-    : FALLBACK_LB;
+  const leaderboard = useMemo(
+    () =>
+      rankings
+        ? rankings.map((r) => ({
+            rank: r.rank,
+            userId: (r as any).userId as string | undefined,
+            name: r.name,
+            title: r.title,
+            dp: r.dp,
+            img: r.avatarUrl ?? IMG.lb1,
+            you: r.isYou,
+            dim: false,
+            persona: (r as any).persona as string | undefined,
+            difficultyLevel: (r as any).difficultyLevel as string | undefined,
+            equippedSkin: (r as any).equippedSkin as string | undefined,
+            inPromotionZone: (r as any).inPromotionZone as boolean | undefined,
+            inDemotionZone: (r as any).inDemotionZone as boolean | undefined,
+            avatarUrl: r.avatarUrl as string | undefined,
+          }))
+        : [],
+    [rankings],
+  );
 
   const dailyShuffledByCategory = useMemo(() => {
-    const daySeed = Math.floor(Date.now() / 86400000);
+    const daySeed = CURRENT_UTC_DAY_INDEX;
     function seededShuffle<T>(arr: T[], seed: number): T[] {
       const copy = [...arr];
       let s = seed;
@@ -2434,35 +3019,249 @@ export default function HomeScreen() {
     return result;
   }, []);
 
-  const INITIAL_PER_CATEGORY = 3;
+  const currentTrainingNode = useMemo(
+    () => mapNodes.find((node) => node.type === "current"),
+    [mapNodes],
+  );
+  const recommendedActivities = useMemo(() => {
+    const personaActivityKeys: Record<PersonaKey, string[]> = {
+      focus: ["scrollreset", "eyesclosed", "focusdot", "breathe", "leaveroom"],
+      fitness: ["run", "pushups", "squats", "stretch", "water"],
+      discipline: ["planday", "study", "clean", "read", "water"],
+      calm: ["breathe", "bodyscan", "gratitude", "mindfulwalk", "eyesclosed"],
+    };
+    const nextTrainingKey = currentTrainingNode?.activityKeys.find(
+      (key: string) => !currentTrainingNode.completedActivityKeys.includes(key),
+    );
+    return Array.from(new Set([
+      nextTrainingKey,
+      ...personaActivityKeys[profilePersona],
+    ].filter(Boolean) as string[]))
+      .map((key) => ACTIVITY_LOOKUP[key])
+      .filter(Boolean)
+      .slice(0, 3) as ActivityItem[];
+  }, [currentTrainingNode, profilePersona]);
+
+  const renderActivityCard = (act: ActivityItem) => {
+    const reward = previewReward(act.key);
+    const limit = ACTIVITY_RULES[act.key]?.dailyLimit;
+    const used = (todayCounts as Record<string, number> | undefined)?.[act.key] ?? 0;
+    const capped = limit !== undefined && used >= limit;
+    return (
+      <View key={act.key} style={[s.unlockCard, capped && { opacity: 0.5 }]}>
+        <View style={[s.unlockIconCircle, { backgroundColor: act.color }]}>
+          {act.key === "pushups" ? (
+            <SvgXml xml={HYE_ICON_PUSHUPS_XML} width={32} height={32} />
+          ) : act.key === "run" ? (
+            <SvgXml xml={HYE_ICON_WALK_XML} width={32} height={32} />
+          ) : act.key === "jumpingjacks" ? (
+            <SvgXml xml={HYE_ICON_JUMPING_JACKS_XML} width={32} height={32} />
+          ) : (
+            <MaterialIcons name={act.icon} size={32} color={C.black} />
+          )}
+        </View>
+        <View style={{ flex: 1, gap: 6 }}>
+          <View style={{ flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
+            <Text style={[s.unlockName, { lineHeight: 18 }]} numberOfLines={2}>
+              {act.key === "run" ? gpsSessionUi.name : act.name}
+            </Text>
+            <View style={s.verifyBadge}>
+              <Text style={s.verifyBadgeText}>{act.verify}</Text>
+            </View>
+          </View>
+          <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+            <Text style={s.unlockFormula} numberOfLines={1}>
+              {act.key === "run" ? gpsSessionUi.formula : (
+                <>
+                  {scaledEffortLabel(act)} ={" "}
+                  <Text style={{ color: C.hotPink }}>{reward.minutes} min</Text>
+                  {" + "}{reward.vp} VP
+                </>
+              )}
+            </Text>
+            <Pressable style={s.goBtn} onPress={() => !capped && handleLogActivity(act)} disabled={capped}>
+              <Text style={s.goBtnText}>{capped ? "DONE" : "START"}</Text>
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    );
+  };
+
+  const rewardCelebrationModal = (
+    <Modal
+      visible={rewardCelebration !== null}
+      transparent
+      animationType="fade"
+      onRequestClose={() => setRewardCelebration(null)}
+    >
+      <View style={s.rewardOverlay}>
+        <View style={s.rewardCard}>
+          <Text style={s.rewardEmoji}>{rewardCelebration?.completedNodeLabel ? "🏆" : "⚡"}</Text>
+          <Text style={s.rewardTitle}>{rewardCelebration?.activityName} complete!</Text>
+          <View style={s.rewardStatsRow}>
+            <Text style={s.rewardStat}>+{rewardCelebration?.minutesEarned ?? 0} min</Text>
+            <Text style={s.rewardStat}>+{rewardCelebration?.vpEarned ?? 0} VP</Text>
+            {(rewardCelebration?.coinsEarned ?? 0) > 0 ? (
+              <Text style={s.rewardStat}>+{rewardCelebration?.coinsEarned} coins</Text>
+            ) : null}
+          </View>
+          {rewardCelebration?.dailyQuestCompleted ? (
+            <Text style={s.rewardBonus}>Daily mission complete · +10 coins</Text>
+          ) : null}
+          {rewardCelebration?.completedNodeLabel ? (
+            <Text style={s.rewardBonus}>
+              30-day path: {rewardCelebration.completedNodeLabel} · +{rewardCelebration.nodeDp} VP
+            </Text>
+          ) : null}
+          <Pressable style={s.rewardCta} onPress={() => setRewardCelebration(null)}>
+            <Text style={s.rewardCtaText}>KEEP GOING</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  if (subscriptionExpired && screen !== "upgrade" && screen !== "finalPaywall") {
+    return (
+      <View style={s.subscriptionGateScreen}>
+        <StatusBar style="dark" />
+        <View style={s.subscriptionGateIcon}>
+          <MaterialIcons name="lock-clock" size={42} color={C.black} />
+        </View>
+        <Text style={s.subscriptionGateTitle}>Your Volt subscription ended</Text>
+        <Text style={s.subscriptionGateBody}>
+          Resubscribe to continue using Volt Pro features, protect your streak, and keep earning with your activities.
+        </Text>
+        <Pressable
+          style={s.subscriptionGatePrimary}
+          onPress={() => setScreen("upgrade")}
+          accessibilityRole="button"
+          accessibilityLabel="Resubscribe to Volt"
+        >
+          <Text style={s.subscriptionGatePrimaryText}>Resubscribe</Text>
+        </Pressable>
+        <Pressable
+          style={s.subscriptionGateSecondary}
+          onPress={() => void doSignOut()}
+          accessibilityRole="button"
+          accessibilityLabel="Sign out"
+        >
+          <Text style={s.subscriptionGateSecondaryText}>Sign Out</Text>
+        </Pressable>
+      </View>
+    );
+  }
 
   if (activeGuidedActivity) {
     const guidedAct = activeGuidedActivity;
-    const dur = guidedAct.effortDurationSec ?? 0;
-    const guidedReward = dur > 0
-      ? computeScaledReward(economyProfile, guidedAct.category as EconCategory, dur)
-      : computeReward(economyProfile, guidedAct.category as EconCategory);
-    const guidedCoins = dur > 0
-      ? scaledCoinRewardForActivity(economyProfile, guidedAct.category as EconCategory, dur)
-      : coinRewardForActivity(economyProfile, guidedAct.category as EconCategory);
+    const guidedReward = previewReward(guidedAct.key);
+    const closeGuided = () => {
+      setActiveGuidedActivity(null);
+      setActiveCoachTrigger(undefined);
+    };
+    if (REFLECTIVE_ACTIVITY_KEYS.has(guidedAct.key)) {
+      return (
+        <ReflectiveCoachSession
+          activity={guidedAct}
+          reward={{ minutes: guidedReward.minutes, vp: guidedReward.vp, coins: 0 }}
+          trigger={activeCoachTrigger}
+          voiceMode="realtime"
+          onClose={closeGuided}
+          onContinue={(args) =>
+            continueReflectiveSession({
+              activityKey: guidedAct.key,
+              activityName: guidedAct.name,
+              ...args,
+            })
+          }
+          onSummarize={(args) =>
+            summarizeReflectiveSession({
+              activityKey: guidedAct.key,
+              activityName: guidedAct.name,
+              ...args,
+            })
+          }
+          onCreateRealtimeCall={({ offerSdp, trigger }) =>
+            createReflectiveRealtimeCall({
+              activityKey: guidedAct.key,
+              activityName: guidedAct.name,
+              offerSdp,
+              trigger,
+              sessionMode: "reflective",
+            })
+          }
+          onEndRealtimeCall={(args) => endRealtimeVoiceSession(args)}
+          onRecordRealtimeUsage={(args) => recordRealtimeVoiceUsage(args)}
+          onSaveSession={async (session) => {
+            const id = await saveCoachedSession({
+              activityType: guidedAct.key,
+              activityName: guidedAct.name,
+              mode: "reflective_coach",
+              status: "completed",
+              ...session,
+            });
+            return String(id);
+          }}
+          onComplete={async (completion?: ReflectiveCoachCompletion) => {
+            try {
+              await recordActivity(
+                guidedAct.name,
+                guidedAct.key,
+                  completion?.note ||
+                  completion?.transcript ||
+                  completion?.summary ||
+                  completion?.coachSessionId
+                    ? {
+                        note: completion.note,
+                        transcript: completion.transcript,
+                        summary: completion.summary,
+                        coachSessionId: completion.coachSessionId,
+                      }
+                    : undefined,
+              );
+              closeGuided();
+            } catch (e: unknown) {
+              const msg = e instanceof Error ? e.message : "Failed to log activity";
+              Alert.alert("Error", msg);
+            }
+          }}
+        />
+      );
+    }
     return (
       <GuidedActivitySession
         activity={guidedAct}
-        reward={{ minutes: guidedReward.minutes, vp: guidedReward.vp, coins: guidedCoins }}
-        onClose={() => setActiveGuidedActivity(null)}
-        onComplete={async () => {
+        reward={{ minutes: guidedReward.minutes, vp: guidedReward.vp, coins: 0 }}
+        onClose={closeGuided}
+        onSummarizeVoiceNote={(args) =>
+          summarizeVoiceNote({
+            activityKey: guidedAct.key,
+            activityName: guidedAct.name,
+            ...args,
+          })
+        }
+        onComplete={async (completion?: GuidedActivityCompletion) => {
           try {
-            await logActivity({
-              type: guidedAct.key,
-              dpEarned: guidedReward.vp,
-              minutesEarned: guidedReward.minutes,
-              verificationMethod: guidedAct.verificationMethod,
-            });
+              await recordActivity(
+                guidedAct.name,
+                guidedAct.key,
+                  completion?.note ||
+                  completion?.transcript ||
+                  completion?.summary ||
+                completion?.voiceUri
+                  ? {
+                      note: completion.note,
+                      transcript: completion.transcript,
+                      summary: completion.summary,
+                        voiceUri: completion.voiceUri,
+                      }
+                    : undefined,
+              );
+            closeGuided();
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : "Failed to log activity";
             Alert.alert("Error", msg);
-          } finally {
-            setActiveGuidedActivity(null);
           }
         }}
       />
@@ -2470,29 +3269,21 @@ export default function HomeScreen() {
   }
 
   if (activeBreathworkActivity) {
-    const breathAct = activeBreathworkActivity;
     return (
       <BreathworkSession
-        baseDp={computeReward(economyProfile, "mindful").vp}
-        baseMinutes={computeReward(economyProfile, "mindful").minutes}
+        baseDp={previewReward("breathe").vp}
+        baseMinutes={previewReward("breathe").minutes}
         diffMultiplier={1}
         onClose={() => setActiveBreathworkActivity(null)}
         onComplete={async (payload) => {
           try {
-            await logActivity({
-              type: "breathe",
-              dpEarned: payload.dp,
-              minutesEarned: payload.minutes,
-              verificationMethod: "guided",
-              metadata: {
+            await recordActivity("Breathe", "breathe", {
                 duration: payload.durationMin * 60,
-              },
             });
+            setActiveBreathworkActivity(null);
           } catch (e: unknown) {
             const msg = e instanceof Error ? e.message : "Failed to log activity";
             Alert.alert("Error", msg);
-          } finally {
-            setActiveBreathworkActivity(null);
           }
         }}
       />
@@ -2510,32 +3301,26 @@ export default function HomeScreen() {
         formulaHint={gpsSessionUi.formula}
         onCancel={() => setActiveGPSSession(false)}
         onComplete={async (result) => {
-          setActiveGPSSession(false);
           if (result.dpEarned > 0) {
             try {
-              const isBeast = economyProfile.difficulty === "beast";
-              const vpMult = isBeast ? 1.5 : 1.0;
-              const dp = Math.round(result.dpEarned * vpMult);
-              const mins = result.minutesEarned;
-              await logActivity({
-                type: "run",
-                dpEarned: dp,
-                minutesEarned: mins,
-                verificationMethod: "gps",
-                metadata: {
+              const logged = await recordActivity(
+                gpsSessionUi.mode === "run" ? "Run" : "Walk",
+                "run",
+                {
                   distance: result.distanceM,
                   duration: result.durationSec,
                 },
-              });
-              Alert.alert(
-                gpsSessionUi.mode === "run" ? "Run logged!" : "Walk logged!",
-                `${(result.distanceM / 1000).toFixed(2)}km — +${mins} min fuel & +${dp} VP${isBeast ? " (1.5x VP)" : ""}.`,
               );
+              if (logged.vpEarned <= 0) {
+                Alert.alert("Session ended", "Go a bit further next time to earn a reward.");
+              }
+              setActiveGPSSession(false);
             } catch (e: unknown) {
               const msg = e instanceof Error ? e.message : "Failed to log activity";
               Alert.alert("Error", msg);
             }
           } else {
+            setActiveGPSSession(false);
             Alert.alert(
               "Session ended",
               gpsSessionUi.mode === "run"
@@ -2554,31 +3339,19 @@ export default function HomeScreen() {
         economyProfile={economyProfile}
         onCancel={() => setActiveCoinRun(false)}
         onComplete={async (result) => {
-          setActiveCoinRun(false);
           if (result.coinsEarned > 0 || result.vpEarned > 0) {
             try {
-              await logActivity({
-                type: "coin_run",
-                dpEarned: result.vpEarned,
-                minutesEarned: 0,
-                verificationMethod: "gps",
-                metadata: {
+              await recordActivity("Coin Run", "coin_run", {
                   distance: result.distanceM,
                   duration: result.durationSec,
-                },
               });
-              if (result.coinsEarned > 0) {
-                await creditCoins({ amount: result.coinsEarned, source: "coin_run" });
-              }
-              Alert.alert(
-                "Coin Run Complete!",
-                `${(result.distanceM / 1000).toFixed(2)}km — +${result.coinsEarned} coins & +${result.vpEarned} VP earned!`,
-              );
+              setActiveCoinRun(false);
             } catch (e: unknown) {
               const msg = e instanceof Error ? e.message : "Failed to log activity";
               Alert.alert("Error", msg);
             }
           } else {
+            setActiveCoinRun(false);
             Alert.alert("Session ended", "Run at least 250m next time to collect coins!");
           }
         }}
@@ -2598,11 +3371,24 @@ export default function HomeScreen() {
         exerciseKey={exerciseKey}
         exerciseLabel={sessionActivity.name}
         targetReps={getTargetReps(sessionActivity)}
-        targetDurationSec={CAMERA_TARGET_DURATION_SEC[sessionActivity.key] ?? 20}
+        targetDurationSec={Math.max(1, Math.round((CAMERA_TARGET_DURATION_SEC[sessionActivity.key] ?? 20) * DIFFICULTY_EFFORT_MULT[profileDifficulty]))}
+        onCreateRealtimeCall={({ offerSdp }) =>
+          createReflectiveRealtimeCall({
+            activityKey: sessionActivity.key,
+            activityName: sessionActivity.name,
+            offerSdp,
+            sessionMode: "movement",
+          })
+        }
+        onEndRealtimeCall={(args) => endRealtimeVoiceSession(args)}
+        onRecordRealtimeUsage={(args) => recordRealtimeVoiceUsage(args)}
         onCancel={() => setActiveCameraActivity(null)}
-        onComplete={async () => {
+        onComplete={async (completed) => {
           setActiveCameraActivity(null);
-          await handleLogActivity(sessionActivity, { skipCameraGate: true });
+          await handleLogActivity(sessionActivity, {
+            skipCameraGate: true,
+            metadata: { reps: typeof completed === "number" ? completed : getTargetReps(sessionActivity) },
+          });
         }}
       />
     );
@@ -2630,28 +3416,21 @@ export default function HomeScreen() {
   // ─── ONBOARDING ─────────────────────────────────────
   if (onboardingScreens.includes(screen)) {
     const idx = onboardingScreens.indexOf(screen);
-    const isDark = idx === 7;
-    const bgColor = isDark ? C.black : C.offWhite;
+    const bgColor = C.offWhite;
 
     const personaData = PERSONA_GOALS[persona];
     const lockedCount = Object.values(lockedApps).filter(Boolean).length;
 
-    const screenTimeGranted =
-      (isIOS && screenTimeAuth === "approved") ||
-      (isAndroid && androidUsageAccessGranted);
+    // CTA labels indexed by onboarding step (see onboardingScreens above).
     const ctaLabels = [
-      "Get Started",
-      "That's Me",
-      screenTimeGranted
-        ? "Continue"
-        : isIOS ? "Allow Screen Time" : isAndroid ? "Allow Usage Access" : "Continue",
-      "Activate Shield",
-      "Continue",
-      "Continue",
-      "Secure My Access",
-      "Claim My Fuel",
+      "Get Started",       // 0 hero
+      "Continue",          // 1 persona
+      "Continue",          // 2 name + goal + scroll estimate
+      "Continue",          // 3 difficulty
+      "Activate Shield",   // 4 vault (triggers Screen Time / Usage Access)
+      "Secure My Access",  // 5 trust bridge → auth
     ];
-    const ctaColors = [C.hotPink, C.hotPink, C.hotPink, C.hotPink, C.hotPink, C.hotPink, C.hotPink, C.hotPink];
+    const ctaColors = [C.hotPink, C.hotPink, C.hotPink, C.hotPink, C.hotPink, C.hotPink];
     const iosSelectionCount =
       selectionMeta.apps + selectionMeta.categories + selectionMeta.domains;
     const shieldedSummaryText = isIOS
@@ -2675,17 +3454,24 @@ export default function HomeScreen() {
 
     return (
       <View style={[s.flex1, { backgroundColor: bgColor }]}>
-        <StatusBar style={isDark ? "light" : "dark"} />
+        <StatusBar style="dark" />
         <GestureDetector gesture={swipe}>
           <View style={s.flex1}>
             <View style={[s.obTopBar, { paddingTop: insets.top + 8 }]}>
-              <ProgressDots active={idx} total={8} />
+              <ProgressDots active={idx} total={onboardingScreens.length} />
               <Pressable onPress={() => goTo("auth")} style={s.skipPill}>
                 <Text style={s.skipPillText}>Skip</Text>
               </Pressable>
             </View>
 
-            <ScrollView contentContainerStyle={s.obScroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <ScrollView
+              contentContainerStyle={[
+                s.obScroll,
+                idx === 3 ? s.obDiffFigmaScroll : undefined,
+              ]}
+              showsVerticalScrollIndicator={false}
+              keyboardShouldPersistTaps="handled"
+            >
               {idx === 0 ? (
                 /* ── SLIDE 1: Figma onboarding hero ── */
                 <View style={s.obSlide1Wrap}>
@@ -2726,7 +3512,7 @@ export default function HomeScreen() {
                       shadowStyle={s.obSpeechBubbleShadow}
                       cardStyle={s.obSpeechBubble}
                     >
-                      <Text style={s.obSpeechText}>What brought you here?</Text>
+                      <Text style={s.obSpeechText}>What Goal brought you here?</Text>
                     </OnboardingShadowBox>
                   </View>
                   <View style={{ gap: 12, width: "100%" }}>
@@ -2771,54 +3557,7 @@ export default function HomeScreen() {
                   </View>
                 </View>
               ) : idx === 2 ? (
-                /* ── SLIDE 3: Screen Time Permission (NEW) ── */
-                <View style={[s.obCenter, { gap: 24 }]}>
-                  <VoltMascot size={100} />
-                  <Text style={[s.obTitleHook, { fontSize: 22, textAlign: "center" }]}>
-                    {isIOS ? "ALLOW SCREEN TIME" : isAndroid ? "ALLOW USAGE ACCESS" : "SCREEN TIME"}
-                  </Text>
-                  <Text style={{ fontSize: 15, fontWeight: "600", color: C.mutedFg, textAlign: "center", lineHeight: 22, paddingHorizontal: 16 }}>
-                    {isIOS
-                      ? "Volt reads your daily screen time so we can set your fuel budget to real data — not guesses."
-                      : isAndroid
-                        ? "Volt reads your daily app usage so we can set your fuel budget to real data — not guesses."
-                        : "We'll calibrate your rewards based on actual screen time."}
-                  </Text>
-                  <View style={{ backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 20, padding: 20, gap: 12, width: "100%" }}>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                      <MaterialIcons name="lock" size={20} color={C.mint} />
-                      <Text style={{ fontSize: 13, fontWeight: "700", color: C.black, flex: 1 }}>
-                        Your data stays on-device. We never upload browsing history.
-                      </Text>
-                    </View>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                      <MaterialIcons name="tune" size={20} color={C.electricYellow} />
-                      <Text style={{ fontSize: 13, fontWeight: "700", color: C.black, flex: 1 }}>
-                        Used only to calibrate your personal fuel economy.
-                      </Text>
-                    </View>
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
-                      <MaterialIcons name="visibility-off" size={20} color={C.hotPink} />
-                      <Text style={{ fontSize: 13, fontWeight: "700", color: C.black, flex: 1 }}>
-                        You can skip — we{"'"}ll ask you to estimate manually instead.
-                      </Text>
-                    </View>
-                  </View>
-                  {(isIOS && screenTimeAuth === "approved") || (isAndroid && androidUsageAccessGranted) ? (
-                    <View style={{ flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: C.mintLight, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10 }}>
-                      <MaterialIcons name="check-circle" size={20} color={C.mint} />
-                      <Text style={{ fontSize: 13, fontWeight: "800", color: C.black }}>Access granted</Text>
-                    </View>
-                  ) : (
-                    <Pressable onPress={() => goAdj(1)} style={{ paddingVertical: 8 }}>
-                      <Text style={{ fontSize: 13, fontWeight: "700", color: C.mutedFg, textDecorationLine: "underline" }}>
-                        Skip for now
-                      </Text>
-                    </Pressable>
-                  )}
-                </View>
-              ) : idx === 4 ? (
-                /* ── SLIDE 4: Name + Goal (persona-divergent) ── */
+                /* ── SLIDE 3: Name + Goal + Scroll Estimate (persona-divergent) ── */
                 <View style={s.obCenter}>
                   <View style={s.obSpeechRow}>
                     <VoltMascot size={64} />
@@ -2860,48 +3599,59 @@ export default function HomeScreen() {
                     <View style={{ gap: 10, width: "100%" }}>
                       {personaData.goals.map((g) => {
                         const selected = goalText === g;
-                        return (
-                          isAndroid ? (
-                            <View key={g} style={s.obGoalBtnFrame}>
-                              <View style={s.obGoalBtnShadow} />
-                              <Pressable
-                                style={[s.obGoalBtn, selected ? s.obGoalBtnActive : undefined]}
-                                onPress={() => setGoalText(g)}
+                        const goalButton = (
+                          <Pressable
+                            style={[
+                              s.obGoalBtn,
+                              selected ? s.obGoalBtnActive : undefined,
+                            ]}
+                            onPress={() => setGoalText(g)}
+                            accessibilityRole="radio"
+                            accessibilityState={{ checked: selected }}
+                          >
+                            <View style={s.obGoalBtnHeader}>
+                              <Text
+                                style={[
+                                  s.obGoalLabel,
+                                  selected ? { color: C.white } : undefined,
+                                ]}
                               >
-                                <Text style={[s.obGoalLabel, selected ? { color: C.white } : undefined]}>{g}</Text>
-                              </Pressable>
+                                {g}
+                              </Text>
                             </View>
-                          ) : (
-                            <Pressable
-                              key={g}
-                              style={[s.obGoalBtn, selected ? s.obGoalBtnActive : undefined]}
-                              onPress={() => setGoalText(g)}
-                            >
-                              <Text style={[s.obGoalLabel, selected ? { color: C.white } : undefined]}>{g}</Text>
-                            </Pressable>
-                          )
+                          </Pressable>
+                        );
+
+                        return isAndroid ? (
+                          <View key={g} style={s.obGoalBtnFrame}>
+                            <View style={s.obGoalBtnShadow} />
+                            {goalButton}
+                          </View>
+                        ) : (
+                          <View key={g}>{goalButton}</View>
                         );
                       })}
                     </View>
                   </View>
                   {persona === "fitness" ? (
-                    <View style={[s.obGoalWrap, isAndroid ? s.obGoalWrapCompact : undefined]}>
-                      <Text style={s.obInputLabel}>YOUR MOVEMENT LEVEL</Text>
-                      <Text style={[s.obScrollHint, isAndroid ? s.obScrollHintCompact : undefined]}>
+                    <View style={[s.obGoalWrap, isAndroid ? s.obGoalWrapCompact : undefined, { gap: 6 }]}>
+                      <Text style={[s.obInputLabel, { fontSize: 9 }]}>YOUR MOVEMENT LEVEL</Text>
+                      <Text style={[s.obScrollHint, isAndroid ? s.obScrollHintCompact : undefined, { fontSize: 10, marginBottom: 2 }]}>
                         We tailor your training map and GPS coins to this.
                       </Text>
-                      <View style={{ gap: 10, width: "100%" }}>
+                      <View style={{ gap: 6, width: "100%" }}>
                         {isAndroid ? (
                           <>
                             <View style={s.obGoalBtnFrame}>
                               <View style={s.obGoalBtnShadow} />
                               <Pressable
-                                style={[s.obGoalBtn, movementLevel === "beginner" ? s.obGoalBtnActive : undefined]}
+                                style={[s.obGoalBtn, { paddingVertical: 12, borderRadius: 12 }, movementLevel === "beginner" ? s.obGoalBtnActive : undefined]}
                                 onPress={() => setMovementLevel("beginner")}
                               >
                                 <Text
                                   style={[
                                     s.obGoalLabel,
+                                    { fontSize: 11 },
                                     movementLevel === "beginner" ? { color: C.white } : undefined,
                                   ]}
                                 >
@@ -2912,12 +3662,13 @@ export default function HomeScreen() {
                             <View style={s.obGoalBtnFrame}>
                               <View style={s.obGoalBtnShadow} />
                               <Pressable
-                                style={[s.obGoalBtn, movementLevel === "decent" ? s.obGoalBtnActive : undefined]}
+                                style={[s.obGoalBtn, { paddingVertical: 12, borderRadius: 12 }, movementLevel === "decent" ? s.obGoalBtnActive : undefined]}
                                 onPress={() => setMovementLevel("decent")}
                               >
                                 <Text
                                   style={[
                                     s.obGoalLabel,
+                                    { fontSize: 11 },
                                     movementLevel === "decent" ? { color: C.white } : undefined,
                                   ]}
                                 >
@@ -2929,12 +3680,13 @@ export default function HomeScreen() {
                         ) : (
                           <>
                             <Pressable
-                              style={[s.obGoalBtn, movementLevel === "beginner" ? s.obGoalBtnActive : undefined]}
+                              style={[s.obGoalBtn, { paddingVertical: 12, borderRadius: 12 }, movementLevel === "beginner" ? s.obGoalBtnActive : undefined]}
                               onPress={() => setMovementLevel("beginner")}
                             >
                               <Text
                                 style={[
                                   s.obGoalLabel,
+                                  { fontSize: 11 },
                                   movementLevel === "beginner" ? { color: C.white } : undefined,
                                 ]}
                               >
@@ -2942,12 +3694,13 @@ export default function HomeScreen() {
                               </Text>
                             </Pressable>
                             <Pressable
-                              style={[s.obGoalBtn, movementLevel === "decent" ? s.obGoalBtnActive : undefined]}
+                              style={[s.obGoalBtn, { paddingVertical: 12, borderRadius: 12 }, movementLevel === "decent" ? s.obGoalBtnActive : undefined]}
                               onPress={() => setMovementLevel("decent")}
                             >
                               <Text
                                 style={[
                                   s.obGoalLabel,
+                                  { fontSize: 11 },
                                   movementLevel === "decent" ? { color: C.white } : undefined,
                                 ]}
                               >
@@ -3009,81 +3762,25 @@ export default function HomeScreen() {
                         );
                       })}
                     </View>
-                    <Text style={[s.obInputLabel, { marginTop: isAndroid ? 8 : 14 }]}>CUT BACK TARGET</Text>
-                    <View style={[s.obScrollChips, isAndroid ? s.obScrollChipsCompact : undefined]}>
-                      {SCROLL_GOAL_CHIPS.map((c) => {
-                        const selected = scrollReductionPercent === c.percent;
-                        return (
-                          isAndroid ? (
-                            <View key={c.label} style={s.obScrollChipFrame}>
-                              <View style={s.obScrollChipShadow} />
-                              <Pressable
-                                style={[s.obScrollChip, selected ? s.obScrollChipActive : undefined]}
-                                onPress={() =>
-                                  setScrollReductionPercent(selected ? null : c.percent)
-                                }
-                              >
-                                <Text style={[s.obScrollChipText, selected ? { color: C.white } : undefined]}>{c.label}</Text>
-                              </Pressable>
-                            </View>
-                          ) : (
-                            <Pressable
-                              key={c.label}
-                              style={[s.obScrollChip, selected ? s.obScrollChipActive : undefined]}
-                              onPress={() =>
-                                setScrollReductionPercent(selected ? null : c.percent)
-                              }
-                            >
-                              <Text style={[s.obScrollChipText, selected ? { color: C.white } : undefined]}>{c.label}</Text>
-                            </Pressable>
-                          )
-                        );
-                      })}
-                    </View>
-
-                    {baselineScrollMinutes != null && scrollReductionPercent != null ? (
-                      <View style={{ marginTop: 16, gap: 8 }}>
-                        <Text style={[s.obInputLabel, { marginBottom: 4 }]}>YOUR GOAL</Text>
-                        <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 12, height: 80 }}>
-                          <View style={{ flex: 1, alignItems: "center", gap: 4 }}>
-                            <Text style={{ fontSize: 11, fontWeight: "800", color: C.mutedFg }}>NOW</Text>
-                            <View style={{ width: "100%", height: 60, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, borderRadius: 8, justifyContent: "center", alignItems: "center" }}>
-                              <Text style={{ fontSize: 16, fontWeight: "900", color: C.white }}>
-                                {baselineScrollMinutes >= 60
-                                  ? `${Math.floor(baselineScrollMinutes / 60)}h ${baselineScrollMinutes % 60}m`
-                                  : `${baselineScrollMinutes}m`}
-                              </Text>
-                            </View>
-                          </View>
-                          <MaterialIcons name="arrow-forward" size={20} color={C.mutedFg} style={{ marginBottom: 20 }} />
-                          <View style={{ flex: 1, alignItems: "center", gap: 4 }}>
-                            <Text style={{ fontSize: 11, fontWeight: "800", color: C.mutedFg }}>GOAL</Text>
-                            {(() => {
-                              const goalMin = Math.round(baselineScrollMinutes * (1 - scrollReductionPercent / 100));
-                              const barH = Math.max(20, 60 * (1 - scrollReductionPercent / 100));
-                              return (
-                                <View style={{ width: "100%", height: 60, justifyContent: "flex-end" }}>
-                                  <View style={{ width: "100%", height: barH, backgroundColor: C.mint, borderWidth: 2, borderColor: C.black, borderRadius: 8, justifyContent: "center", alignItems: "center" }}>
-                                    <Text style={{ fontSize: 16, fontWeight: "900", color: C.black }}>
-                                      {goalMin >= 60
-                                        ? `${Math.floor(goalMin / 60)}h ${goalMin % 60}m`
-                                        : `${goalMin}m`}
-                                    </Text>
-                                  </View>
-                                </View>
-                              );
-                            })()}
-                          </View>
-                        </View>
-                        <Text style={{ fontSize: 11, fontWeight: "700", color: C.mint, textAlign: "center", marginTop: 4 }}>
-                          {scrollReductionPercent}% less — that{"'"}s {Math.round(baselineScrollMinutes * scrollReductionPercent / 100)}m saved daily
-                        </Text>
-                      </View>
-                    ) : null}
+                    <Text style={s.obScrollHint}>
+                      Your challenge level on the next step turns this estimate
+                      into a clear daily target.
+                    </Text>
                   </View>
                 </View>
               ) : idx === 3 ? (
-                /* ── SLIDE 4: Lock the Vault ── */
+                /* ── SLIDE 4: Difficulty (Figma nodes 512:3193 / 3278 / 3363) ── */
+                <OnboardingDifficultyStep
+                  selectedDifficulty={difficulty}
+                  baselineMinutes={baselineScrollMinutes ?? 60}
+                  onSelect={(nextDifficulty, reductionPercent) => {
+                    setDifficulty(nextDifficulty);
+                    setScrollReductionPercent(reductionPercent);
+                    setBaselineScrollMinutes((current) => current ?? 60);
+                  }}
+                />
+              ) : idx === 4 ? (
+                /* ── SLIDE 5: Lock the Vault (iOS Screen Time / Android Usage Access) ── */
                 <View style={s.obShieldWrap}>
                   <View style={s.obShieldHeroRow}>
                     <VoltMascot size={120} />
@@ -3147,7 +3844,7 @@ export default function HomeScreen() {
                       style={s.hiddenPickerAnchor}
                       familyActivitySelection={familySelection}
                       onSelectionChange={handleIosShieldSelectionChange}
-                      onDismissRequest={() => setIosShieldPickerVisible(false)}
+                      onDismissRequest={commitIosShieldSelection}
                       headerText="Select apps to lock in Volt"
                     />
                   ) : null}
@@ -3289,73 +3986,8 @@ export default function HomeScreen() {
                     </Modal>
                   ) : null}
                 </View>
-              ) : idx === 5 ? (
-                /* ── SLIDE 6: Difficulty Level ── */
-                <View style={s.obDiffFigmaWrap}>
-                  <View style={s.obDiffFigmaHeroRow}>
-                    <VoltMascot size={120} />
-                    <OnboardingShadowBox
-                      frameStyle={s.obDiffFigmaBubbleFrame}
-                      shadowStyle={s.obDiffFigmaBubbleShadow}
-                      cardStyle={s.obDiffFigmaBubble}
-                    >
-                      <Text style={s.obDiffFigmaBubbleText}>
-                        {"HOW HARD SHOULD I\nPUSH YOU?"}
-                      </Text>
-                    </OnboardingShadowBox>
-                  </View>
-                  <View style={s.obDiffFigmaOptions}>
-                    {DIFFICULTIES.map((d) => {
-                      const selected = difficulty === d.key;
-                      return (
-                        isAndroid ? (
-                          <View key={d.key} style={s.obDiffFigmaCardFrame}>
-                            <View style={s.obDiffFigmaCardShadow} />
-                            <Pressable
-                              style={[
-                                s.obDiffFigmaCard,
-                                selected ? s.obDiffFigmaCardActive : undefined,
-                              ]}
-                              onPress={() => setDifficulty(d.key)}
-                            >
-                              <View style={s.obDiffFigmaTextCol}>
-                                <Text style={s.obDiffFigmaTitle}>{d.label}</Text>
-                                <Text style={s.obDiffFigmaTag}>{d.tag}</Text>
-                                <Text style={s.obDiffFigmaDesc}>{d.desc}</Text>
-                              </View>
-                              <View style={s.obDiffFigmaRadio}>
-                                {selected ? <View style={s.obDiffFigmaRadioDot} /> : null}
-                              </View>
-                            </Pressable>
-                          </View>
-                        ) : (
-                          <Pressable
-                            key={d.key}
-                            style={[
-                              s.obDiffFigmaCard,
-                              selected ? s.obDiffFigmaCardActive : undefined,
-                            ]}
-                            onPress={() => setDifficulty(d.key)}
-                          >
-                            <View style={s.obDiffFigmaTextCol}>
-                              <Text style={s.obDiffFigmaTitle}>{d.label}</Text>
-                              <Text style={s.obDiffFigmaTag}>{d.tag}</Text>
-                              <Text style={s.obDiffFigmaDesc}>{d.desc}</Text>
-                            </View>
-                            <View style={s.obDiffFigmaRadio}>
-                              {selected ? <View style={s.obDiffFigmaRadioDot} /> : null}
-                            </View>
-                          </Pressable>
-                        )
-                      );
-                    })}
-                  </View>
-                  <Text style={s.obDiffFigmaNote}>
-                    You can change this anytime in Profile
-                  </Text>
-                </View>
-              ) : idx === 6 ? (
-                /* ── SLIDE 7: Trust Bridge ── */
+              ) : (
+                /* ── SLIDE 6: Trust Bridge (Volt Respects Your Hustle) ── */
                 <View style={s.obTrustFigmaWrap}>
                   <View style={s.obTrustFigmaHeadlineWrap}>
                     <Text style={s.obTrustFigmaHeadline}>VOLT RESPECTS</Text>
@@ -3401,53 +4033,11 @@ export default function HomeScreen() {
                     ))}
                   </View>
                 </View>
-              ) : (
-                /* ── SLIDE 8: Charged Up reward screen ── */
-                <View style={s.obChargedWrap}>
-                  <Animated.View style={[bounceStyle, s.obChargedMascotWrap]}>
-                    <SvgXml xml={MASCOT_VOLT_XML} width={134} height={152} />
-                  </Animated.View>
-
-                  <View style={s.obChargedCopyWrap}>
-                    <Text style={s.obChargedHeadline}>{"YOU'RE"}</Text>
-                    <Text style={s.obChargedHeadline}>CHARGED UP</Text>
-                  </View>
-
-                  <View style={s.obChargedRewardWrap}>
-                    <Text style={s.obChargedRewardVp}>+50 VP</Text>
-                    <Text style={s.obChargedRewardMinutes}>+10 MINUTES TO YOUR SCROLL</Text>
-                  </View>
-
-                  <View style={s.obChargedFuelSection}>
-                    <View style={s.obChargedFuelLabelRow}>
-                      <Text style={s.obChargedFuelLabel}>YOUR FUEL</Text>
-                      <Text style={s.obChargedFuelValue}>
-                        <Text style={s.obChargedFuelValueActive}>10</Text>
-                        <Text style={s.obChargedFuelValueDim}>/90 min</Text>
-                      </Text>
-                    </View>
-                    <View style={s.obChargedFuelTrack}>
-                      <View style={s.obChargedFuelFillWrap}>
-                        <View style={s.obChargedFuelFillGlow} />
-                        <View style={s.obChargedFuelFill} />
-                      </View>
-                    </View>
-                    <OnboardingShadowBox
-                      frameStyle={s.obChargedMessageFrame}
-                      shadowStyle={s.obChargedMessageShadow}
-                      cardStyle={s.obChargedMessageCard}
-                    >
-                      <Text style={s.obChargedMessageText}>
-                        THIS IS YOURS. USE THESE MINUTES TO UNLOCK ANY APP RIGHT NOW.
-                      </Text>
-                    </OnboardingShadowBox>
-                  </View>
-                </View>
               )}
             </ScrollView>
 
-            <View style={[s.obFooter, { paddingBottom: insets.bottom + 16, backgroundColor: isDark ? C.black : C.offWhite }]}>
-              {idx === 3 ? (
+            <View style={[s.obFooter, { paddingBottom: insets.bottom + 16, backgroundColor: C.offWhite }]}>
+              {idx === 4 ? (
                 <View style={s.obShieldFooterCtaFrame}>
                   <View style={s.obShieldFooterCtaShadow} />
                   <Pressable
@@ -3459,25 +4049,6 @@ export default function HomeScreen() {
                     </Text>
                   </Pressable>
                 </View>
-              ) : idx === 7 ? (
-                isAndroid ? (
-                  <View style={s.obChargedFooterCtaFrame}>
-                    <View style={s.obChargedFooterCtaShadow} />
-                    <Pressable
-                      style={[s.obChargedFooterCta, { backgroundColor: ctaColors[idx] }]}
-                      onPress={handleObCta}
-                    >
-                      <Text style={s.ctaBtnText}>{ctaLabels[idx]}</Text>
-                    </Pressable>
-                  </View>
-                ) : (
-                  <Pressable
-                    style={[s.obChargedFooterCta, { backgroundColor: ctaColors[idx] }]}
-                    onPress={handleObCta}
-                  >
-                    <Text style={s.ctaBtnText}>{ctaLabels[idx]}</Text>
-                  </Pressable>
-                )
               ) : (
                 isAndroid ? (
                   <View style={s.obFooterCtaFrame}>
@@ -3511,62 +4082,47 @@ export default function HomeScreen() {
   if (screen === "welcome") {
     const personaInfo = PERSONAS.find((p) => p.key === persona)!;
     const diffInfo = DIFFICULTY_LABEL[difficulty];
-    const isBeast = difficulty === "beast";
 
     return (
       <View style={[s.flex1, { backgroundColor: C.offWhite }]}>
-        <ScrollView contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
-          {/* Hero: Mascot + Glow */}
+        <StatusBar style="dark" />
+        <ScrollView
+          contentContainerStyle={[s.welScroll, { paddingTop: insets.top + 30, paddingBottom: insets.bottom + 140 }]}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={s.welHero}>
             <View style={s.welGlow} />
-            <Animated.View style={bounceStyle}>
-              <VoltMascot size={160} variant="celebrating" />
-            </Animated.View>
-            {/* Persona emoji badge */}
-            <View style={s.welEmojiBadge}>
-              <Text style={s.welEmoji}>{personaInfo.emoji}</Text>
+            <VoltMascot size={134} variant="celebrating" />
+          </View>
+
+          <Text style={s.welTitle}>WELCOME!</Text>
+
+          <View style={s.welCard}>
+            <Text style={s.welCardTitle}>{personaInfo.label.toUpperCase()}</Text>
+            <Text style={s.welCardQuote}>{PERSONA_WELCOME_QUOTE[persona]}</Text>
+            <View style={s.welDiffBadge}>
+              <Text style={s.welDiffText}>{diffInfo.tag}</Text>
             </View>
           </View>
 
-          {/* Title */}
-          <View style={s.welTitleWrap}>
-            <Text style={s.welSubtitle}>YOU CHOSE</Text>
-            <Text style={s.welTitle}>WELCOME, {(name || "CHAMP").toUpperCase()}</Text>
-          </View>
-
-          {/* Persona Identity Card */}
-          <View style={s.welCard}>
-            <Text style={s.welCardTitle}>{personaInfo.label.toUpperCase()}</Text>
-            <Text style={s.welCardQuote}>{`"${PERSONA_WELCOME_QUOTE[persona]}"`}</Text>
-            {isBeast ? (
-              <View style={s.welDiffBadge}>
-                <Text style={s.welDiffText}>{diffInfo.tag} — {diffInfo.multiplier} REWARDS</Text>
-              </View>
-            ) : (
-              <View style={[s.welDiffBadge, { backgroundColor: C.mint }]}>
-                <Text style={[s.welDiffText, { color: C.black }]}>{diffInfo.tag}</Text>
-              </View>
-            )}
-          </View>
-
-          {/* Starting stat pills */}
-          <View style={s.welPills}>
+          <Text style={s.welRewardTitle}>YOUR REWARD</Text>
+          <View style={s.welPills} accessibilityLabel="Rewards: 50 Volt Points, 10 minutes, day 1 streak">
             <View style={s.welPill}>
-              <SvgXml xml={WELCOME_PILL_VP_XML} width={18} height={18} />
+              <Image source={WELCOME_VP_ICON} style={s.welPillIcon} contentFit="contain" />
               <Text style={s.welPillText}>50 VP</Text>
             </View>
             <View style={s.welPill}>
-              <SvgXml xml={WELCOME_PILL_BATTERY_XML} width={18} height={18} />
+              <Text style={s.welPillEmoji}>🔋</Text>
               <Text style={s.welPillText}>10 MIN</Text>
             </View>
             <View style={s.welPill}>
-              <Text style={s.welPillText}>DAY 1 🔥</Text>
+              <Image source={WELCOME_STREAK_ICON} style={s.welPillIcon} contentFit="contain" />
+              <Text style={s.welPillText}>DAY 1</Text>
             </View>
           </View>
         </ScrollView>
 
-        {/* Sticky CTA */}
-        <View style={[s.welFooter, { paddingBottom: insets.bottom + 16 }]}>
+        <View style={[s.welFooter, { paddingBottom: insets.bottom + 10 }]}>
           <Pressable style={s.welCtaBtn} onPress={() => setScreen("howYouEarn")}>
             <Text style={s.welCtaText}>{"LET'S GO"}</Text>
           </Pressable>
@@ -3577,155 +4133,141 @@ export default function HomeScreen() {
 
   // ─── HOW YOU EARN (Post-Auth Screen 2) ──────────────
   if (screen === "howYouEarn") {
-    const FLOW_STEPS: { icon: string; label: string; bg: string }[] = [
-      { icon: "shield", label: "Shield", bg: C.hotPink },
-      { icon: "fitness-center", label: "Earn", bg: C.indigo },
-      { icon: "check-circle", label: "Verify", bg: C.mint },
-      { icon: "bolt", label: "Refuel", bg: C.electricYellow },
-      { icon: "phone-iphone", label: "Scroll", bg: C.purple },
+    const FLOW_STEPS = [
+      { icon: HYE_FLOW_SHIELD, label: "Shield" },
+      { icon: HYE_FLOW_EARN, label: "Earn" },
+      { icon: HYE_FLOW_REFUEL, label: "Refuel" },
+      { icon: HYE_FLOW_SCROLL, label: "Scroll" },
     ];
 
-    const physReward = computeReward(economyProfile, "physical");
-    const mindReward = computeReward(economyProfile, "mindful");
-
-    const EARN_EXAMPLES: {
-      name: string;
-      iconMode: "runningSvg" | "pushupPng" | "breatherPng";
-      badge: string;
-      formula: string;
-      min: string;
-      dp: string;
-      color: string;
-      tint: string;
-    }[] = [
+    const EARN_EXAMPLES = [
       {
-        name: "GPS WALK",
-        iconMode: "runningSvg",
-        badge: "GPS VERIFIED",
-        formula: "1 km =",
-        min: `${physReward.minutes} min`,
-        dp: `${physReward.vp} VP`,
-        color: C.mint,
-        tint: "rgba(0,229,160,0.05)",
+        key: "run",
+        iconMode: "walkSvg",
+        iconBg: "#FADB69",
       },
       {
-        name: "PUSH-UPS",
-        iconMode: "pushupPng",
-        badge: "CAMERA VERIFIED",
-        formula: "10 reps =",
-        min: `${physReward.minutes} min`,
-        dp: `${physReward.vp} VP`,
-        color: C.indigo,
-        tint: "rgba(99,102,241,0.05)",
+        key: "pushups",
+        iconMode: "pushupSvg",
+        iconBg: "#C491EE",
       },
       {
-        name: "BREATHE",
+        key: "breathe",
         iconMode: "breatherPng",
-        badge: "GUIDED",
-        formula: "3 min =",
-        min: `${mindReward.minutes} min`,
-        dp: `${mindReward.vp} VP`,
-        color: C.purple,
-        tint: "rgba(139,92,246,0.05)",
+        iconBg: "#B1D7BD",
+      },
+    ] as const;
+
+    const REWARDS = [
+      {
+        icon: "⚡",
+        title: "VP",
+        body: "Your Volt Points. Powers your rank & map",
+        height: 100,
+      },
+      {
+        icon: "🪙",
+        title: "COINS",
+        body: "Collect coins doing extra mile and spend them on cool stuff for you and your friends",
+        height: 116,
+      },
+      {
+        icon: "🔋",
+        title: "MINUTES",
+        body: "Earn minutes to scroll without guilt",
+        height: 92,
       },
     ];
 
     return (
       <View style={[s.flex1, { backgroundColor: C.offWhite }]}>
-        <ScrollView contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
-          {/* Title */}
+        <StatusBar style="dark" />
+        <ScrollView
+          contentContainerStyle={[s.hyeScroll, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 118 }]}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={s.hyeTitleWrap}>
-            <Text style={s.hyeTitle}>HOW YOU EARN</Text>
-            <Text style={s.hyeSubtitle}>EFFORT IN. FUEL OUT.</Text>
+            <View style={s.hyeTitleRow}>
+              <Text style={s.hyeTitle}>HOW YOU</Text>
+              <Text style={[s.hyeTitle, s.hyeTitleAccent]}>EARN</Text>
+            </View>
+            <Text style={s.hyeSubtitle}>EFFORT IN. FUEL OUT</Text>
           </View>
 
-          {/* Flow icons row (Figma 82:365 — 92px band, connector through icon centers) */}
           <View style={s.hyeFlowSection}>
             <View style={s.hyeFlowLine} />
             <View style={s.hyeFlowRow}>
               {FLOW_STEPS.map((step) => (
                 <View key={step.label} style={s.hyeFlowItem}>
-                  <View style={[s.hyeFlowIcon, { backgroundColor: step.bg }]}>
-                    <MaterialIcons name={step.icon as any} size={20} color={C.white} />
-                  </View>
+                  <Image source={step.icon} style={s.hyeFlowIcon} contentFit="contain" />
                   <Text style={s.hyeFlowLabel}>{step.label.toUpperCase()}</Text>
                 </View>
               ))}
             </View>
           </View>
 
-          {/* Activity example cards */}
+          <Text style={s.hyeSectionTitle}>COMPLETE THE TASKS</Text>
           <View style={s.hyeCards}>
-            {EARN_EXAMPLES.map((ex) => (
-              <View key={ex.name} style={s.hyeCard}>
-                <View style={[s.hyeCardTint, { backgroundColor: ex.tint }]} />
-                <View style={s.hyeCardRow}>
-                  <View style={[s.hyeCardIcon, { backgroundColor: ex.color }]}>
-                    {ex.iconMode === "runningSvg" ? (
-                      <SvgXml
-                        xml={HYE_ICON_RUNNING_XML.replaceAll("#00E5A0", C.black)}
-                        width={26}
-                        height={26}
-                      />
-                    ) : ex.iconMode === "pushupPng" ? (
-                      <SvgXml
-                        xml={HYE_ICON_PUSHUPS_XML}
-                        width={26}
-                        height={26}
-                      />
+            {EARN_EXAMPLES.map((ex) => {
+              const act = ACTIVITY_LOOKUP[ex.key] as ActivityItem;
+              const reward = previewReward(act.key);
+              return (
+                <View key={ex.key} style={s.hyeCard}>
+                  <View style={[s.hyeCardIcon, { backgroundColor: ex.iconBg }]}>
+                    {ex.iconMode === "walkSvg" ? (
+                      <SvgXml xml={HYE_ICON_WALK_XML} width={32} height={32} />
+                    ) : ex.iconMode === "pushupSvg" ? (
+                      <SvgXml xml={HYE_ICON_PUSHUPS_XML} width={32} height={32} />
                     ) : (
                       <Image
                         source={HYE_CARD_ICON_BREATHER}
-                        style={s.hyeCardIconGlyph}
+                        style={s.hyeCardIconImage}
                         contentFit="contain"
                       />
                     )}
                   </View>
                   <View style={s.hyeCardBody}>
                     <View style={s.hyeCardTitleRow}>
-                      <Text style={s.hyeCardName}>{ex.name}</Text>
+                      <Text style={s.hyeCardName}>{act.name.toUpperCase()}</Text>
                       <View style={s.hyeBadge}>
-                        <Text style={s.hyeBadgeText}>{ex.badge}</Text>
+                        <Text style={s.hyeBadgeText}>{act.verify.toUpperCase()}</Text>
                       </View>
                     </View>
                     <View style={s.hyeCardFormulaRow}>
-                      <Text style={s.hyeFormulaGrey}>{ex.formula} </Text>
-                      <Text style={[s.hyeFormulaColor, { color: ex.color }]}>{ex.min}</Text>
+                      <Text style={s.hyeFormulaGrey}>{scaledEffortLabel(act)} = </Text>
+                      <Text style={s.hyeFormulaPink}>{reward.minutes} min</Text>
                       <Text style={s.hyeFormulaGrey}> + </Text>
-                      <Text style={[s.hyeFormulaColor, { color: ex.color }]}>{ex.dp}</Text>
+                      <Text style={s.hyeFormulaGrey}>{reward.vp} VP</Text>
                     </View>
                   </View>
+                  <View style={s.hyeStartBtn}>
+                    <Text style={s.hyeStartBtnText}>START</Text>
+                  </View>
                 </View>
+              );
+            })}
+          </View>
+
+          <Text style={[s.hyeSectionTitle, s.hyeRewardsSectionTitle]}>EARN REWARDS</Text>
+          <View style={s.hyeRewards}>
+            {REWARDS.map((reward) => (
+              <View key={reward.title} style={[s.hyeRewardCard, { height: reward.height }]}>
+                <View style={s.hyeRewardTitleRow}>
+                  {reward.title === "VP" ? (
+                    <Image source={HYE_VP_ICON} style={s.hyeRewardVpIcon} contentFit="contain" />
+                  ) : (
+                    <Text style={s.hyeRewardIcon}>{reward.icon}</Text>
+                  )}
+                  <Text style={s.hyeRewardTitle}>{reward.title}</Text>
+                </View>
+                <Text style={s.hyeRewardBody}>{reward.body}</Text>
               </View>
             ))}
           </View>
-
-          {/* Bottom explainer cards (Figma 82:347) */}
-          <View style={s.hyeExplainers}>
-            <View style={s.hyeExpDP}>
-              <SvgXml xml={WELCOME_PILL_VP_XML} width={24} height={24} />
-              <View style={s.hyeExpTextBlock}>
-                <Text style={s.hyeExpDPTitle}>VP</Text>
-                <Text style={s.hyeExpDPDesc}>Your discipline score. Powers your rank & map.</Text>
-              </View>
-            </View>
-            <View style={s.hyeExpMin}>
-              <SvgXml
-                xml={WELCOME_PILL_BATTERY_XML.replace("#00E5A0", C.black)}
-                width={24}
-                height={24}
-              />
-              <View style={s.hyeExpTextBlock}>
-                <Text style={s.hyeExpMinTitle}>MINUTES</Text>
-                <Text style={s.hyeExpMinDesc}>Spend on locked apps. Earn more to scroll more.</Text>
-              </View>
-            </View>
-          </View>
         </ScrollView>
 
-        {/* Sticky CTA */}
-        <View style={[s.hyeFooter, { paddingBottom: insets.bottom + 16 }]}>
-          <Pressable style={s.hyeCtaBtn} onPress={() => setScreen("voltEconomy")}>
+        <View style={[s.hyeFooter, { paddingBottom: insets.bottom + 10 }]}>
+          <Pressable style={s.hyeCtaBtn} onPress={() => setScreen("yourPath")}>
             <Text style={s.hyeCtaText}>GOT IT</Text>
           </Pressable>
         </View>
@@ -3797,15 +4339,15 @@ export default function HomeScreen() {
               </View>
               <Text style={s.veSpendTitle}>COINS</Text>
               <View style={s.veSpendPills}>
-                <View style={s.veSpendPill}><Text style={s.veSpendPillText}>Daily Login +5</Text></View>
-                <View style={s.veSpendPill}><Text style={s.veSpendPillText}>7-Day Streak +25</Text></View>
+                <View style={s.veSpendPill}><Text style={s.veSpendPillText}>Coin Runs 🏃</Text></View>
                 <View style={s.veSpendPill}><Text style={s.veSpendPillText}>Map Chests +10-50</Text></View>
+                <View style={s.veSpendPill}><Text style={s.veSpendPillText}>Train Mode Only</Text></View>
               </View>
               <View style={s.veSpendDivider} />
               <Text style={s.veSpendDesc}>
-                Cosmetics, shop items — and later, gifts for friends when social is live.
+                Exchange for fuel (screen time), cosmetics, shop items, and gifts for friends.
               </Text>
-              <Text style={s.veSpendTag}>ALSO PURCHASABLE</Text>
+              <Text style={s.veSpendTag}>TRAIN MODE EXCLUSIVE</Text>
             </View>
           </View>
 
@@ -3849,178 +4391,97 @@ export default function HomeScreen() {
             <Text style={s.veCtaText}>{"LET'S EARN"}</Text>
           </Pressable>
         </View>
+        <PostAuthBackButton top={insets.top + 12} onPress={() => setScreen("howYouEarn")} />
       </View>
     );
   }
 
   // ─── YOUR DISCIPLINE PATH (Post-Auth Screen 4) ─────
   if (screen === "yourPath") {
-    const OB_MAP_NODES: { label: string; nodeType: "regular" | "chest" | "boss" | "rest"; state: "completed" | "current" | "locked" }[] = [
-      { label: "THE FIRST STEP", nodeType: "boss", state: "completed" },
-      { label: "EASY WALK", nodeType: "regular", state: "current" },
-      { label: "FIRST PUSH", nodeType: "regular", state: "locked" },
-      { label: "STRETCH BREAK", nodeType: "rest", state: "locked" },
-      { label: "MYSTERY REWARD", nodeType: "chest", state: "locked" },
-      { label: "STEADY RUN", nodeType: "regular", state: "locked" },
-      { label: "BOSS: FOUNDATION", nodeType: "boss", state: "locked" },
-    ];
+    const pathScale = SW / 393;
+    const pathNodes = [
+      { key: "grey-top", left: 170, top: 26, size: 64, radius: 999, bg: C.darkGray, icon: "star", locked: false },
+      { key: "grey-left", left: 18, top: 102, size: 64, radius: 999, bg: C.darkGray, icon: "star", locked: false },
+      { key: "gift-left", left: 130, top: 118, size: 40, radius: 4, bg: C.darkGray, icon: "gift", locked: false },
+      { key: "trophy-right", left: 259, top: 166, size: 76, radius: 16, bg: C.deepPurple, icon: "trophy", locked: false },
+      { key: "star-mid", left: 201, top: 335, size: 64, radius: 999, bg: C.electricYellow, icon: "star", locked: true },
+      { key: "gift-right", left: 317, top: 389, size: 40, radius: 4, bg: C.mint, icon: "gift", locked: false },
+      { key: "trophy-left", left: 16, top: 381, size: 76, radius: 16, bg: C.deepPurple, icon: "trophy", locked: true },
+      { key: "star-bottom", left: 154, top: 473, size: 64, radius: 999, bg: C.electricYellow, icon: "star", locked: true },
+    ] as const;
 
-    const obMapW = SW - 80;
-    const obNodeLayout = OB_MAP_NODES.map((n, i) => {
-      const sz = n.nodeType === "boss" ? 76 : n.nodeType === "chest" || n.nodeType === "rest" ? 40 : 64;
-      const xPct = MAP_X_PATTERN[i % MAP_X_PATTERN.length];
-      return { x: xPct * (obMapW - sz), y: i * 90 + 10, sz };
-    });
-    const obTotalH = OB_MAP_NODES.length * 90 + 40;
-    const obPathPts = obNodeLayout.map((n) => ({ cx: n.x + n.sz / 2, cy: n.y + n.sz / 2 }));
-    let obPathD = obPathPts.length > 1 ? `M ${obPathPts[0].cx} ${obPathPts[0].cy}` : "";
-    for (let pi = 1; pi < obPathPts.length; pi++) {
-      const p = obPathPts[pi - 1], c = obPathPts[pi];
-      const my = (p.cy + c.cy) / 2;
-      obPathD += ` C ${p.cx},${my} ${c.cx},${my} ${c.cx},${c.cy}`;
-    }
-
-    const LB_ROWS = [
-      { rank: 1, name: "Alex", dp: 850, avatar: IMG.lb1, you: false },
-      { rank: 2, name: `${name || "You"} (You)`, dp: 720, avatar: IMG.lb2, you: true },
-      { rank: 3, name: "Sam", dp: 680, avatar: IMG.lb3, you: false },
-    ];
+    const pathIcon = (icon: "star" | "gift" | "trophy", scale: number) => {
+      if (icon === "trophy") return <SvgXml xml={TROPHY_ICON_XML} width={48 * scale} height={48 * scale} />;
+      if (icon === "gift") return <SvgXml xml={GIFT_ICON_XML} width={24 * scale} height={24 * scale} />;
+      return <SvgXml xml={LEVEL_STAR_ICON_XML} width={32 * scale} height={32 * scale} />;
+    };
 
     return (
       <View style={[s.flex1, { backgroundColor: C.offWhite }]}>
-        <ScrollView contentContainerStyle={{ paddingBottom: 140 }} showsVerticalScrollIndicator={false}>
-          {/* Title */}
+        <StatusBar style="dark" />
+        <ScrollView
+          contentContainerStyle={[s.ypScroll, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 118 }]}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={s.ypTitleWrap}>
-            <Text style={s.ypTitle}>YOUR 30-DAY PATH</Text>
-            <Text style={s.ypSubtitle}>TRAIN. CLIMB. COMPETE.</Text>
+            <Text style={s.ypTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.72}>
+              YOUR 30-DAY <Text style={s.ypTitleAccent}>PATH</Text>
+            </Text>
+            <Text style={s.ypSubtitle}>TRAIN. GAIN. COMPETE</Text>
           </View>
 
-          {/* Map preview matching in-app train map */}
-          <View style={[s.ypMapWrap, { height: obTotalH, position: "relative" }]}>
-            <Svg width={obMapW} height={obTotalH} style={StyleSheet.absoluteFill}>
-              <Path d={obPathD} fill="none" stroke={C.black} strokeWidth={4} strokeDasharray="12 12" strokeLinecap="round" />
+          <View style={[s.ypMapWrap, { height: 550 * pathScale }]}>
+            <Svg width={SW} height={550 * pathScale} viewBox="0 0 393 550" style={StyleSheet.absoluteFill}>
+              <Path
+                d="M 393 72 C 330 110 282 104 232 70 C 188 40 112 16 72 66 C 30 119 38 187 94 220 C 144 248 205 183 258 187 C 333 191 360 292 322 348 C 292 392 232 374 202 368 C 139 357 94 390 64 431 C 34 471 58 513 106 520 C 160 528 204 461 256 453 C 312 443 358 446 393 482"
+                fill="none"
+                stroke={C.black}
+                strokeWidth={4}
+                strokeDasharray="12 8"
+                strokeLinecap="round"
+              />
             </Svg>
 
-            {OB_MAP_NODES.map((node, i) => {
-              const pos = obNodeLayout[i];
-              const isBoss = node.nodeType === "boss";
-              const isGift = node.nodeType === "chest";
-              const isRest = node.nodeType === "rest";
-              const isCurrent = node.state === "current";
-              const isCompleted = node.state === "completed";
-              const isLocked = node.state === "locked";
-
-              const bgColor = isLocked && !isBoss
-                ? C.darkGray
-                : isCompleted
-                  ? (isBoss ? C.deepPurple : C.electricYellow)
-                  : isCurrent
-                    ? C.electricYellow
-                    : isBoss
-                      ? C.deepPurple
-                      : isGift || isRest
-                        ? C.mint
-                        : C.electricYellow;
-              const br = isBoss ? 16 : isGift || isRest ? 4 : 9999;
-              const iconXml = isBoss ? TROPHY_ICON_XML : isGift || isRest ? GIFT_ICON_XML : LEVEL_STAR_ICON_XML;
-              const iconSz = isBoss ? 48 : isGift || isRest ? 24 : 32;
-
+            {pathNodes.map((node) => {
               return (
                 <View
-                  key={`ob-node-${i}`}
-                  style={{ position: "absolute", left: pos.x, top: pos.y, alignItems: "center" }}
+                  key={node.key}
+                  style={[
+                    s.ypPathNode,
+                    {
+                      left: node.left * pathScale,
+                      top: node.top * pathScale,
+                      width: node.size * pathScale,
+                      height: node.size * pathScale,
+                      borderRadius: node.radius * pathScale,
+                      backgroundColor: node.bg,
+                    },
+                  ]}
                 >
-                  {isCurrent && (
-                    <Animated.View
+                  {pathIcon(node.icon, pathScale)}
+                  {node.locked ? (
+                    <View
                       style={[
+                        s.ypLockBadge,
                         {
-                          position: "absolute",
-                          width: pos.sz + 20,
-                          height: pos.sz + 20,
-                          borderRadius: (pos.sz + 20) / 2,
-                          backgroundColor: "rgba(255,45,120,0.25)",
-                          top: -10,
-                          left: -10,
+                          width: 24 * pathScale,
+                          height: 24 * pathScale,
+                          borderRadius: 12 * pathScale,
+                          right: -8 * pathScale,
+                          top: -4 * pathScale,
                         },
-                        nodeGlowStyle,
                       ]}
-                    />
-                  )}
-                  <View
-                    style={{
-                      width: pos.sz,
-                      height: pos.sz,
-                      borderRadius: br,
-                      backgroundColor: bgColor,
-                      borderWidth: 2,
-                      borderColor: C.black,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      ...SH2,
-                    }}
-                  >
-                    {isCompleted ? (
-                      <MaterialIcons name="check" size={isBoss ? 36 : 28} color={C.white} />
-                    ) : (
-                      <SvgXml xml={iconXml} width={iconSz} height={iconSz} />
-                    )}
-                  </View>
-
-                  {isLocked && !(isGift || isRest) && (
-                    <View style={s.trainLockBadge}>
-                      <SvgXml xml={LOCK_ICON_XML} width={14} height={14} />
+                    >
+                      <SvgXml xml={LOCK_ICON_XML} width={14 * pathScale} height={14 * pathScale} />
                     </View>
-                  )}
-
-                  {isCurrent && (
-                    <View style={s.trainCurrentPill}>
-                      <Text style={s.trainCurrentPillText}>{node.label}</Text>
-                    </View>
-                  )}
+                  ) : null}
                 </View>
               );
             })}
           </View>
-
-          {/* Divider */}
-          <View style={s.ypDivider} />
-
-          {/* Leaderboard preview */}
-          <View style={s.ypLbWrap}>
-            <View style={s.ypLbBadge}>
-              <MaterialIcons name="emoji-events" size={12} color={C.black} />
-              <Text style={s.ypLbBadgeText}>DIVISION 3 — SILVER</Text>
-            </View>
-            <View style={s.ypLbCard}>
-              {LB_ROWS.map((row) => (
-                <View key={row.rank} style={[s.ypLbRow, row.you && { backgroundColor: C.mintLight }]}>
-                  <View style={s.ypLbDot} />
-                  <Text style={s.ypLbRank}>#{row.rank}</Text>
-                  <Image source={{ uri: row.avatar }} style={s.ypLbAvatar} />
-                  <Text style={s.ypLbName}>{row.name.toUpperCase()}</Text>
-                  <Text style={s.ypLbDP}>{row.dp} VP</Text>
-                </View>
-              ))}
-            </View>
-            <Text style={s.ypLbHint}>Compete weekly. Top 3 rise. Bottom 2 drop.</Text>
-          </View>
-
-          {/* Social proof */}
-          <View style={s.ypSocial}>
-            <View style={s.ypAvatarStack}>
-              <Image source={{ uri: IMG.lb1 }} style={[s.ypStackAvatar, { zIndex: 3 }]} />
-              <Image source={{ uri: IMG.lb2 }} style={[s.ypStackAvatar, { marginLeft: -10, zIndex: 2 }]} />
-              <Image source={{ uri: IMG.lb3 }} style={[s.ypStackAvatar, { marginLeft: -10, zIndex: 1 }]} />
-              <View style={[s.ypStackPlus, { marginLeft: -10 }]}>
-                <Text style={s.ypStackPlusText}>+</Text>
-              </View>
-            </View>
-            <Text style={s.ypSocialText}>FIND FRIENDS NEARBY</Text>
-          </View>
         </ScrollView>
 
-        {/* Sticky CTA */}
-        <View style={[s.ypFooter, { paddingBottom: insets.bottom + 16 }]}>
+        <View style={[s.ypFooter, { paddingBottom: insets.bottom + 10 }]}>
           <Pressable style={s.ypCtaBtn} onPress={() => setScreen("upgrade")}>
             <Text style={s.ypCtaText}>{"I'M READY"}</Text>
           </Pressable>
@@ -4031,103 +4492,103 @@ export default function HomeScreen() {
 
   // ─── UPGRADE / PAYWALL ──────────────────────────────
   if (screen === "upgrade") {
-    const PRO_FEATURES = [
-      { title: "UNLIMITED SHIELD", desc: "Block any number of apps without limits.", icon: "shield" as const, bg: "rgba(255,45,120,0.1)" },
-      { title: "ELITE TRAINING MAPS", desc: "Unlock exclusive high-VP challenges & boss battles.", icon: "map" as const, bg: "rgba(0,229,160,0.1)" },
+    const featureRows = [
       {
-        title: "LAZY PASSES",
-        desc: "Monthly & yearly: 3 streak freezes each calendar month. Weekly plan: none included.",
-        icon: "whatshot" as const,
-        bg: "rgba(255,214,10,0.1)",
+        title: "LATEST AI VOICE COACH",
+        desc: "Natural live coaching powered by our latest voice model in focused sessions up to 5 minutes",
+        icon: "🎙️",
       },
+      {
+        title: "ACTIVE MOVEMENT RECOGNITION",
+        desc: "On-device movement recognition tracks reps and holds, with live voice encouragement during physical activities",
+        icon: "🏋️",
+      },
+      { title: "UNLIMITED SHIELDS", desc: "Block any number of apps without limits", icon: "🛡️" },
+      { title: "ELITE TRAINING MAPS", desc: "Exclusive challenges & boss battles", icon: "🗺️" },
+      { title: "STREAK PROTECTION", desc: "Weekly includes 1 lazy pass/week; monthly includes 3 lazy passes/month", icon: "🧨" },
     ];
-
-    const yearlyPkg = rcPackages.find((p) => p.identifier === "$rc_annual");
     const monthlyPkg = rcPackages.find((p) => p.identifier === "$rc_monthly");
     const weeklyPkg = rcPackages.find((p) => p.identifier === "$rc_weekly");
-
-    const yearlyPrice = yearlyPkg?.product.priceString ?? "$49.99";
-    const monthlyPrice = monthlyPkg?.product.priceString ?? "$19.99";
-    const weeklyPrice = weeklyPkg?.product.priceString ?? "$7.99";
-
-    const yearlyPerMonth = yearlyPkg
-      ? `${yearlyPkg.product.currencyCode === "USD" ? "$" : ""}${(yearlyPkg.product.price / 12).toFixed(2)}`
-      : "$4.17";
+    const planRows: { key: PurchasableBillingPeriod; title: string; price: string; desc: string; badge?: string }[] = [
+      {
+        key: "weekly",
+        title: "WEEKLY STARTER",
+        price: `${weeklyPkg?.product.priceString ?? "$11.99"}/W`,
+        desc: "• 35 voice minutes/week with our latest voice model\n• Active movement recognition\n• 1 lazy pass/week",
+      },
+      {
+        key: "monthly",
+        title: "MONTHLY WARRIOR",
+        price: `${monthlyPkg?.product.priceString ?? "$23.99"}/M`,
+        desc: "• 90 voice minutes/month with our latest voice model\n• Active movement recognition\n• 3 lazy passes/month",
+        badge: "BEST VALUE",
+      },
+    ];
 
     return (
       <View style={[s.flex1, { backgroundColor: C.offWhite }]}>
         <StatusBar style="dark" />
-        <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 200 }} showsVerticalScrollIndicator={false}>
+        <ScrollView
+          contentContainerStyle={[s.upScroll, { paddingTop: insets.top + 48, paddingBottom: insets.bottom + 118 }]}
+          showsVerticalScrollIndicator={false}
+        >
           <View style={s.upHero}>
-            <View style={s.upGlow} />
             <Animated.View style={bounceStyle}>
-              <VoltMascot size={160} variant="celebrating" />
+              <VoltMascot size={72} variant="celebrating" />
             </Animated.View>
+
+            <View style={s.upTitleWrap}>
+              <Text style={[s.upTitle, s.upTitlePink]}>GO</Text>
+              <Text style={s.upTitle} numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.75}>
+                SUPERCHARGED
+              </Text>
+              <Text style={s.upSubtitle}>LEVEL UP YOUR FOCUS GAME</Text>
+            </View>
           </View>
 
-          <Text style={s.upTitle}>GO SUPERCHARGED</Text>
-          <Text style={s.upSubtitle}>LEVEL UP YOUR FOCUS GAME</Text>
+          <View style={s.upPlans}>
+            <Text style={s.upSectionLabel}>CHOOSE SUBSCRIPTION:</Text>
+            {planRows.map((plan) => {
+              const selected = selectedPlan === plan.key;
+              return (
+                <Pressable
+                  key={plan.key}
+                  style={[s.upPlanCard, selected ? s.upPlanCardSelected : undefined]}
+                  onPress={() => setSelectedPlan(plan.key)}
+                >
+                  <View style={s.upPlanText}>
+                    <View style={s.upPlanHeader}>
+                      <Text style={s.upPlanTitle}>{plan.title}</Text>
+                      <Text style={s.upPlanPrice}>{plan.price}</Text>
+                    </View>
+                    <Text style={[s.upPlanDesc, selected ? s.upPlanDescSelected : undefined]}>{plan.desc}</Text>
+                  </View>
+                  <View style={[s.upRadio, selected ? s.upRadioSelected : undefined]} />
+                  {plan.badge ? (
+                    <View style={s.upBestValue}>
+                      <Text style={s.upBestValueText}>{plan.badge}</Text>
+                    </View>
+                  ) : null}
+                </Pressable>
+              );
+            })}
+          </View>
 
           <View style={s.upFeatures}>
-            {PRO_FEATURES.map((f) => (
-              <View key={f.title} style={s.upFeatureCard}>
-                <View style={[s.upFeatureIcon, { backgroundColor: f.bg }]}>
-                  <MaterialIcons name={f.icon} size={24} color={C.black} />
-                </View>
+            <Text style={s.upSectionLabel}>YOU RECEIVE:</Text>
+            {featureRows.map((feature) => (
+              <View key={feature.title} style={s.upFeatureCard}>
+                <Text style={s.upFeatureEmoji}>{feature.icon}</Text>
                 <View style={s.upFeatureText}>
-                  <Text style={s.upFeatureTitle}>{f.title}</Text>
-                  <Text style={s.upFeatureDesc}>{f.desc}</Text>
+                  <Text style={s.upFeatureTitle}>{feature.title}</Text>
+                  <Text style={s.upFeatureDesc}>{feature.desc}</Text>
                 </View>
               </View>
             ))}
           </View>
-
-          <View style={s.upPlans}>
-            {/* Yearly */}
-            <Pressable
-              style={[selectedPlan === "yearly" ? s.upPlanYearly : s.upPlanMonthly]}
-              onPress={() => setSelectedPlan("yearly")}
-            >
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={s.upPlanTitle}>YEARLY LEGEND</Text>
-                <Text style={s.upPlanPrice}>{yearlyPerMonth} / mo</Text>
-                <Text style={s.upPlanBilled}>({yearlyPrice} BILLED YEARLY)</Text>
-                <Text style={[s.upPlanBilled, { fontSize: 10, marginTop: 2, color: C.mutedFg }]}>3 lazy passes every month</Text>
-              </View>
-              <View style={s.upBestValue}>
-                <Text style={s.upBestValueText}>BEST{"\n"}VALUE</Text>
-              </View>
-            </Pressable>
-
-            {/* Monthly */}
-            <Pressable
-              style={[selectedPlan === "monthly" ? s.upPlanYearly : s.upPlanMonthly]}
-              onPress={() => setSelectedPlan("monthly")}
-            >
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={[s.upPlanTitle, { fontSize: 18 }]}>MONTHLY WARRIOR</Text>
-                <Text style={s.upPlanPrice}>{monthlyPrice} / mo</Text>
-                <Text style={s.upPlanBilled}>CANCEL ANYTIME</Text>
-                <Text style={[s.upPlanBilled, { fontSize: 10, marginTop: 2, color: C.mutedFg }]}>3 lazy passes / month</Text>
-              </View>
-            </Pressable>
-
-            {/* Weekly */}
-            <Pressable
-              style={[selectedPlan === "weekly" ? s.upPlanYearly : s.upPlanMonthly]}
-              onPress={() => setSelectedPlan("weekly")}
-            >
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={[s.upPlanTitle, { fontSize: 18 }]}>WEEKLY STARTER</Text>
-                <Text style={s.upPlanPrice}>{weeklyPrice} / wk</Text>
-                <Text style={s.upPlanBilled}>FLEXIBLE COMMITMENT</Text>
-                <Text style={[s.upPlanBilled, { fontSize: 10, marginTop: 2, color: C.mutedFg }]}>No lazy passes included</Text>
-              </View>
-            </Pressable>
-          </View>
         </ScrollView>
 
-        <View style={[s.upFooter, { paddingBottom: insets.bottom + 16 }]}>
+        <View style={[s.upFooter, { paddingBottom: insets.bottom + 10 }]}>
           <Pressable
             style={[s.upCtaBtn, purchasing && { opacity: 0.6 }]}
             onPress={handlePurchase}
@@ -4136,16 +4597,20 @@ export default function HomeScreen() {
             {purchasing ? (
               <ActivityIndicator color={C.white} />
             ) : (
-              <Text style={s.upCtaText}>CONTINUE</Text>
+              <Text style={s.upCtaText}>SUBSCRIBE NOW</Text>
             )}
           </Pressable>
-          <View style={s.upLegalRow}>
-            <Pressable onPress={handleRestore} disabled={purchasing}><Text style={s.upLegalLink}>RESTORE</Text></Pressable>
-            <Text style={s.upLegalDot}>•</Text>
-            <Pressable onPress={() => Linking.openURL("https://example.com/terms")}><Text style={s.upLegalLink}>TERMS</Text></Pressable>
-            <Text style={s.upLegalDot}>•</Text>
-            <Pressable onPress={() => Linking.openURL("https://example.com/privacy")}><Text style={s.upLegalLink}>PRIVACY</Text></Pressable>
-          </View>
+          <Pressable
+            onPress={handleRestore}
+            disabled={purchasing}
+            accessibilityRole="button"
+            accessibilityLabel="Restore purchases"
+            hitSlop={8}
+          >
+            <Text style={{ color: C.black, fontSize: 13, fontWeight: "700", textAlign: "center", marginTop: 8 }}>
+              RESTORE PURCHASES
+            </Text>
+          </Pressable>
         </View>
 
         <View style={[s.upCloseWrap, { top: insets.top + 12 }]}>
@@ -4157,140 +4622,63 @@ export default function HomeScreen() {
     );
   }
 
-  // ─── DISCOUNT PAYWALL (shown after closing initial paywall) ──
-  if (screen === "discountUpgrade") {
-    const originalYearlyPkg = rcPackages.find((p) => p.identifier === "$rc_annual");
-    const originalPrice = originalYearlyPkg?.product.priceString ?? "$49.99";
-    const discountPrice = discountPackage?.product.priceString ?? "$24.99";
-    const discountPerMonth = discountPackage
-      ? `${discountPackage.product.currencyCode === "USD" ? "$" : ""}${(discountPackage.product.price / 12).toFixed(2)}`
-      : "$2.08";
-
-    return (
-      <View style={[s.flex1, { backgroundColor: "#0D0D1A" }]}>
-        <StatusBar style="light" />
-        <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 200 }} showsVerticalScrollIndicator={false}>
-          <View style={{ alignItems: "center", paddingTop: insets.top + 60, paddingHorizontal: 32 }}>
-            <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: C.electricYellow, borderWidth: 3, borderColor: C.black, alignItems: "center", justifyContent: "center", marginBottom: 24 }}>
-              <MaterialIcons name="local-offer" size={40} color={C.black} />
-            </View>
-
-            <Text style={{ fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.electricYellow, letterSpacing: 2, marginBottom: 8 }}>WAIT — SPECIAL OFFER</Text>
-            <Text style={{ fontSize: 32, fontWeight: "900", fontStyle: "italic", color: C.white, textAlign: "center", letterSpacing: -1.5, lineHeight: 36, marginBottom: 8 }}>ONE-TIME{"\n"}YEARLY DEAL</Text>
-            <Text style={{ fontSize: 14, fontWeight: "600", color: "rgba(255,255,255,0.6)", textAlign: "center", marginBottom: 40 }}>This offer won{"'"}t appear again</Text>
-
-            <View style={{ width: "100%", backgroundColor: C.electricYellow, borderWidth: 3, borderColor: C.black, borderRadius: 24, padding: 28, marginBottom: 24 }}>
-              <View style={{ position: "absolute", top: -14, alignSelf: "center", backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, borderRadius: 4, paddingHorizontal: 12, paddingVertical: 6 }}>
-                <Text style={{ fontSize: 10, fontWeight: "900", color: C.white, letterSpacing: 1 }}>50% OFF</Text>
-              </View>
-
-              <Text style={{ fontSize: 18, fontWeight: "900", fontStyle: "italic", textTransform: "uppercase", color: C.black, marginBottom: 12 }}>YEARLY LEGEND</Text>
-
-              <View style={{ flexDirection: "row", alignItems: "baseline", gap: 12, marginBottom: 4 }}>
-                <Text style={{ fontSize: 36, fontWeight: "900", color: C.black }}>{discountPrice}</Text>
-                <Text style={{ fontSize: 18, fontWeight: "700", color: "rgba(0,0,0,0.4)", textDecorationLine: "line-through" }}>{originalPrice}</Text>
-              </View>
-              <Text style={{ fontSize: 12, fontWeight: "700", color: "rgba(0,0,0,0.5)", textTransform: "uppercase", letterSpacing: 0.5 }}>JUST {discountPerMonth}/MO • BILLED YEARLY</Text>
-
-              <View style={{ marginTop: 20, gap: 10 }}>
-                {["Unlimited Shield", "Elite Training Maps", "3 lazy passes / month (monthly & yearly)"].map((feat) => (
-                  <View key={feat} style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                    <MaterialIcons name="check-circle" size={18} color={C.mint} />
-                    <Text style={{ fontSize: 13, fontWeight: "700", color: C.black }}>{feat}</Text>
-                  </View>
-                ))}
-              </View>
-            </View>
-          </View>
-        </ScrollView>
-
-        <View style={[s.upFooter, { paddingBottom: insets.bottom + 16, backgroundColor: "#0D0D1A" }]}>
-          <Pressable
-            style={[s.upCtaBtn, { backgroundColor: C.electricYellow }, purchasing && { opacity: 0.6 }]}
-            onPress={handleDiscountPurchase}
-            disabled={purchasing}
-          >
-            {purchasing ? (
-              <ActivityIndicator color={C.black} />
-            ) : (
-              <Text style={[s.upCtaText, { color: C.black }]}>CLAIM THIS DEAL</Text>
-            )}
-          </Pressable>
-          <View style={s.upLegalRow}>
-            <Pressable onPress={handleRestore} disabled={purchasing}><Text style={s.upLegalLink}>RESTORE</Text></Pressable>
-            <Text style={s.upLegalDot}>•</Text>
-            <Pressable onPress={() => Linking.openURL("https://example.com/terms")}><Text style={s.upLegalLink}>TERMS</Text></Pressable>
-            <Text style={s.upLegalDot}>•</Text>
-            <Pressable onPress={() => Linking.openURL("https://example.com/privacy")}><Text style={s.upLegalLink}>PRIVACY</Text></Pressable>
-          </View>
-        </View>
-
-        <View style={[s.upCloseWrap, { top: insets.top + 12 }]}>
-          <Pressable style={[s.upCloseBtn, { backgroundColor: "rgba(255,255,255,0.1)", borderColor: "rgba(255,255,255,0.2)" }]} onPress={handleCloseDiscountPaywall}>
-            <MaterialIcons name="close" size={20} color={C.white} />
-          </Pressable>
-        </View>
-      </View>
-    );
-  }
-
   // ─── FINAL PAYWALL (no close — monthly/weekly only) ──
   if (screen === "finalPaywall") {
     const monthlyPkg = rcPackages.find((p) => p.identifier === "$rc_monthly");
     const weeklyPkg = rcPackages.find((p) => p.identifier === "$rc_weekly");
-    const monthlyPrice = monthlyPkg?.product.priceString ?? "$19.99";
-    const weeklyPrice = weeklyPkg?.product.priceString ?? "$7.99";
+    const monthlyPrice = monthlyPkg?.product.priceString ?? "$23.99";
+    const weeklyPrice = weeklyPkg?.product.priceString ?? "$11.99";
+    const finalPlans: { key: PurchasableBillingPeriod; title: string; price: string; desc: string; badge?: string }[] = [
+      { key: "weekly", title: "WEEKLY STARTER", price: `${weeklyPrice}/W`, desc: "• 35 voice minutes/week with our latest voice model\n• Active movement recognition\n• 1 lazy pass/week" },
+      { key: "monthly", title: "MONTHLY WARRIOR", price: `${monthlyPrice}/M`, desc: "• 90 voice minutes/month with our latest voice model\n• Active movement recognition\n• 3 lazy passes/month", badge: "BEST VALUE" },
+    ];
 
     return (
       <View style={[s.flex1, { backgroundColor: C.offWhite }]}>
         <StatusBar style="dark" />
-        <ScrollView contentContainerStyle={{ paddingBottom: insets.bottom + 200 }} showsVerticalScrollIndicator={false}>
-          <View style={{ alignItems: "center", paddingTop: insets.top + 40, paddingHorizontal: 32 }}>
-            {/* Mascot + speech bubble */}
-            <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 12, marginBottom: 32, width: "100%" }}>
-              <VoltMascot size={72} />
-              <View style={{ flex: 1, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 20, borderTopLeftRadius: 4, padding: 16 }}>
-                <Text style={{ fontSize: 15, fontWeight: "700", color: C.black, lineHeight: 22 }}>
-                  {"Hey! I get it — the yearly plan isn't for everyone. But even a small subscription helps us keep Volt running and building new features for you."}
-                </Text>
-                <Text style={{ fontSize: 15, fontWeight: "700", color: C.black, lineHeight: 22, marginTop: 8 }}>
-                  {"Pick a plan that works for you — every bit helps us help YOU build better habits! 💪"}
-                </Text>
-              </View>
+        <ScrollView
+          contentContainerStyle={[s.fpScroll, { paddingTop: insets.top + 48, paddingBottom: insets.bottom + 118 }]}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={s.fpHeroRow}>
+            <VoltMascot size={96} />
+            <View style={s.fpBubble}>
+              <Text style={s.fpBubbleText}>
+                {"VOLT PRO INCLUDES NATURAL LIVE COACHING POWERED BY OUR LATEST VOICE MODEL.\nWEEKLY AND MONTHLY PRICING HELPS US KEEP IT FAST, RELIABLE, AND AVAILABLE WHEN YOU NEED IT."}
+              </Text>
             </View>
-
-            <Text style={[s.upTitle, { fontSize: 28 }]}>SUPPORT VOLT</Text>
-            <Text style={s.upSubtitle}>HELP US HELP YOU</Text>
           </View>
 
-          <View style={s.upPlans}>
-            {/* Monthly */}
-            <Pressable
-              style={[selectedPlan === "monthly" ? s.upPlanYearly : s.upPlanMonthly]}
-              onPress={() => setSelectedPlan("monthly")}
-            >
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={s.upPlanTitle}>MONTHLY WARRIOR</Text>
-                <Text style={s.upPlanPrice}>{monthlyPrice} / mo</Text>
-                <Text style={s.upPlanBilled}>CANCEL ANYTIME</Text>
-              </View>
-            </Pressable>
-
-            {/* Weekly */}
-            <Pressable
-              style={[selectedPlan === "weekly" ? s.upPlanYearly : s.upPlanMonthly]}
-              onPress={() => setSelectedPlan("weekly")}
-            >
-              <View style={{ flex: 1, gap: 4 }}>
-                <Text style={s.upPlanTitle}>WEEKLY STARTER</Text>
-                <Text style={s.upPlanPrice}>{weeklyPrice} / wk</Text>
-                <Text style={s.upPlanBilled}>MOST FLEXIBLE</Text>
-              </View>
-            </Pressable>
+          <View style={s.fpPlans}>
+            <Text style={s.upSectionLabel}>CHOOSE SUBSCRIPTION:</Text>
+            {finalPlans.map((plan) => {
+              const selected = selectedPlan === plan.key;
+              return (
+                <Pressable
+                  key={plan.key}
+                  style={[s.upPlanCard, selected ? s.upPlanCardSelected : undefined]}
+                  onPress={() => setSelectedPlan(plan.key)}
+                >
+                  <View style={s.upPlanText}>
+                    <View style={s.upPlanHeader}>
+                      <Text style={s.upPlanTitle}>{plan.title}</Text>
+                      <Text style={s.upPlanPrice}>{plan.price}</Text>
+                    </View>
+                    <Text style={[s.upPlanDesc, selected ? s.upPlanDescSelected : undefined]}>{plan.desc}</Text>
+                  </View>
+                  <View style={[s.upRadio, selected ? s.upRadioSelected : undefined]} />
+                  {plan.badge ? (
+                    <View style={s.upBestValue}>
+                      <Text style={s.upBestValueText}>{plan.badge}</Text>
+                    </View>
+                  ) : null}
+                </Pressable>
+              );
+            })}
           </View>
         </ScrollView>
 
-        <View style={[s.upFooter, { paddingBottom: insets.bottom + 16 }]}>
+        <View style={[s.upFooter, { paddingBottom: insets.bottom + 10 }]}>
           <Pressable
             style={[s.upCtaBtn, purchasing && { opacity: 0.6 }]}
             onPress={handleFinalPurchase}
@@ -4302,18 +4690,21 @@ export default function HomeScreen() {
               <Text style={s.upCtaText}>SUBSCRIBE NOW</Text>
             )}
           </Pressable>
-          <View style={s.upLegalRow}>
-            <Pressable onPress={handleRestore} disabled={purchasing}><Text style={s.upLegalLink}>RESTORE</Text></Pressable>
-            <Text style={s.upLegalDot}>•</Text>
-            <Pressable onPress={() => Linking.openURL("https://example.com/terms")}><Text style={s.upLegalLink}>TERMS</Text></Pressable>
-            <Text style={s.upLegalDot}>•</Text>
-            <Pressable onPress={() => Linking.openURL("https://example.com/privacy")}><Text style={s.upLegalLink}>PRIVACY</Text></Pressable>
-          </View>
+          <Pressable
+            onPress={handleRestore}
+            disabled={purchasing}
+            accessibilityRole="button"
+            accessibilityLabel="Restore purchases"
+            hitSlop={8}
+          >
+            <Text style={{ color: C.black, fontSize: 13, fontWeight: "700", textAlign: "center", marginTop: 8 }}>
+              RESTORE PURCHASES
+            </Text>
+          </Pressable>
         </View>
       </View>
     );
   }
-
   // ─── AUTH ───────────────────────────────────────────
   if (screen === "auth") {
     const isSignUp = authMode === "signup";
@@ -4546,40 +4937,100 @@ export default function HomeScreen() {
     );
   }
 
+  // ─── ACTIVITY LIBRARY ───────────────────────────────
+  if (screen === "activities") {
+    return (
+      <View style={s.screenBg}>
+        <StatusBar style="dark" />
+        {rewardCelebrationModal}
+        <ScrollView
+          contentContainerStyle={[s.mainScroll, { paddingTop: insets.top + 8, paddingBottom: contentPad }]}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={s.header}>
+            <Pressable onPress={() => goTo("today")} style={s.backBtn}>
+              <MaterialIcons name="arrow-back" size={22} color={C.black} />
+            </Pressable>
+            <View style={s.flex1}>
+              <Text style={s.headerTitle}>All Activities</Text>
+              <Text style={{ fontSize: 12, fontWeight: "700", color: C.mutedFg }}>
+                26 ways to earn fuel · effort scales with {profileDifficulty} mode
+              </Text>
+            </View>
+          </View>
+          {(["physical", "mindful", "micro", "anti-scroll"] as ActivityCategory[]).map((category) => {
+            const meta = CATEGORY_META[category];
+            const activities = dailyShuffledByCategory[category] ?? [];
+            return (
+              <View key={category} style={{ marginBottom: 18 }}>
+                <View style={s.catHeader}>
+                  <MaterialIcons name={meta.icon} size={16} color={C.mutedFg} />
+                  <Text style={s.catHeaderText}>{meta.label}</Text>
+                </View>
+                <View style={s.fastUnlockGroup}>{activities.map(renderActivityCard)}</View>
+              </View>
+            );
+          })}
+        </ScrollView>
+        <BottomNav active="today" onPress={tabPress} bottom={insets.bottom} />
+      </View>
+    );
+  }
+
   // ─── TODAY DASHBOARD ────────────────────────────────
   if (screen === "today") {
     return (
       <View style={s.screenBg}>
         <StatusBar style="dark" />
+        {rewardCelebrationModal}
 
         {/* VP Claim popup */}
         <Modal visible={showVpClaim} transparent animationType="fade" onRequestClose={() => setShowVpClaim(false)}>
-          <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.6)", alignItems: "center", justifyContent: "center", paddingHorizontal: 32 }}>
-            <View style={{ width: "100%", backgroundColor: C.white, borderRadius: 28, borderWidth: 3, borderColor: C.black, padding: 32, alignItems: "center" }}>
-              <View style={{ width: 80, height: 80, borderRadius: 40, backgroundColor: C.electricYellow, borderWidth: 3, borderColor: C.black, alignItems: "center", justifyContent: "center", marginBottom: 16, marginTop: -56 }}>
-                <Text style={{ fontSize: 36 }}>⚡</Text>
+          <View style={s.welcomeBonusOverlay}>
+            <View style={s.welcomeBonusCard}>
+              <Text style={s.welcomeBonusTitle}>WELCOME BONUS</Text>
+              <View style={s.welcomeBonusRewards}>
+                <View style={s.welcomeBonusChip}>
+                  <MaterialIcons name="bolt" size={18} color={C.electricYellow} />
+                  <Text style={s.welcomeBonusChipText}>50 VP</Text>
+                </View>
+                <View style={s.welcomeBonusChip}>
+                  <Text style={s.welcomeBonusChipEmoji}>🔋</Text>
+                  <Text style={s.welcomeBonusChipText}>10 MIN</Text>
+                </View>
+                <View style={s.welcomeBonusChip}>
+                  <Text style={s.welcomeBonusChipEmoji}>🧨</Text>
+                  <Text style={s.welcomeBonusChipText}>DAY 1</Text>
+                </View>
               </View>
-              <Text style={{ fontSize: 12, fontWeight: "900", textTransform: "uppercase", color: C.mutedFg, letterSpacing: 2, marginBottom: 4 }}>WELCOME BONUS</Text>
-              <Text style={{ fontSize: 48, fontWeight: "900", fontStyle: "italic", color: C.black, letterSpacing: -2 }}>+50 VP</Text>
-              <Text style={{ fontSize: 15, fontWeight: "600", color: C.mutedFg, textAlign: "center", marginTop: 8, marginBottom: 24, lineHeight: 22 }}>
-                {"You've earned your first Volt Points! Use them to unlock rewards and climb the leaderboard."}
+              <Text style={s.welcomeBonusBody}>
+                You’ve earned your first Volt Points! Use them to unlock reward and climb the leaderboard.
               </Text>
               <Pressable
-                style={{ width: "100%", height: 56, borderRadius: 9999, backgroundColor: C.electricYellow, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center" }}
-                onPress={() => setShowVpClaim(false)}
+                style={s.welcomeBonusCta}
+                onPress={() => {
+                  void claimWelcomeBonus({})
+                    .then(() => setShowVpClaim(false))
+                    .catch((e) => {
+                      Alert.alert("Bonus error", e instanceof Error ? e.message : "Could not claim your welcome bonus.");
+                    });
+                }}
               >
-                <Text style={{ fontSize: 18, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: 1 }}>CLAIM</Text>
+                <Text style={s.welcomeBonusCtaText}>CLAIM</Text>
               </Pressable>
             </View>
           </View>
         </Modal>
         <ScrollView contentContainerStyle={[s.mainScroll, { paddingTop: insets.top + 8, paddingBottom: contentPad }]} showsVerticalScrollIndicator={false}>
           <View style={s.topChipRow}>
-            <VpChip amount={String(todayDp ?? 0)} />
-            <CoinChip amount={profile?.coinBalance ?? 0} />
-            <Pressable onPress={() => setScreen("store")} style={s.storeChip}>
-              <MaterialIcons name="storefront" size={14} color={C.black} />
-              <Text style={s.storeChipText}>Store</Text>
+            <VpChip amount={String(profileDp)} />
+            <Pressable
+              style={s.topChipSlot}
+              onPress={() => goTo("store")}
+              accessibilityRole="button"
+              accessibilityLabel="Open rewards store"
+            >
+              <CoinChip amount={profile?.coinBalance ?? 0} style={s.topCoinChip} textStyle={{ fontSize: 11 }} iconSize={16} />
             </Pressable>
             <StreakChip day={currentStreak} />
           </View>
@@ -4622,10 +5073,13 @@ export default function HomeScreen() {
 
           <View style={s.voltCard}>
             <View style={s.fuelMeterRow}>
-              <Text style={s.fuelMeterLabel}>Your Fuel</Text>
+              <View style={s.fuelMeterLabelWrap}>
+                <Text style={s.fuelMeterEmoji}>🔋</Text>
+                <Text style={s.fuelMeterLabel}>Your Fuel</Text>
+              </View>
               <Text style={s.fuelMeterValue}>
                 <Text style={{ color: C.mint }}>{profileMinutes}</Text>
-                /90 min
+                /{maxMinutes} min
               </Text>
             </View>
             <View style={s.gaugeOuter}>
@@ -4645,91 +5099,40 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          <Text style={s.sectionTitle}>Earn Fuel</Text>
-          {(["physical", "mindful", "micro", "anti-scroll"] as ActivityCategory[]).map((cat) => {
-            const allCat = dailyShuffledByCategory[cat];
-            if (!allCat || allCat.length === 0) return null;
-            const isExpanded = expandedCategories.has(cat);
-            const visible = isExpanded ? allCat : allCat.slice(0, INITIAL_PER_CATEGORY);
-            const hasMore = allCat.length > INITIAL_PER_CATEGORY;
-            const meta = CATEGORY_META[cat];
-            return (
-              <View key={cat} style={{ marginBottom: 16 }}>
-                <View style={s.catHeader}>
-                  <MaterialIcons name={meta.icon} size={16} color={C.mutedFg} />
-                  <Text style={s.catHeaderText}>{meta.label}</Text>
-                </View>
-                <View style={s.fastUnlockGroup}>
-                  {visible.map((act) => {
-                    const dur = act.effortDurationSec ?? 0;
-                    const reward = dur > 0
-                      ? computeScaledReward(economyProfile, act.category as EconCategory, dur)
-                      : computeReward(economyProfile, act.category as EconCategory);
-                    const coins = dur > 0
-                      ? scaledCoinRewardForActivity(economyProfile, act.category as EconCategory, dur)
-                      : coinRewardForActivity(economyProfile, act.category as EconCategory);
-                    const limit = DAILY_LIMITS[act.key];
-                    const used = (todayCounts as Record<string, number> | undefined)?.[act.key] ?? 0;
-                    const capped = limit !== undefined && used >= limit;
-                    return (
-                      <View key={act.key} style={[s.unlockCard, capped && { opacity: 0.5 }]}>
-                        <View style={s.unlockTopRow}>
-                          <View style={[s.unlockIconCircle, { backgroundColor: act.color }]}>
-                            {act.key === "pushups" ? (
-                              <SvgXml xml={HYE_ICON_PUSHUPS_XML} width={22} height={22} />
-                            ) : (
-                              <MaterialIcons name={act.icon} size={22} color={C.white} />
-                            )}
-                          </View>
-                          <Text style={s.unlockName} numberOfLines={1}>
-                            {act.key === "run" ? gpsSessionUi.name : act.name}
-                          </Text>
-                          <View style={s.verifyBadge}>
-                            <Text style={s.verifyBadgeText}>{act.verify}</Text>
-                          </View>
-                        </View>
-                        <View style={s.unlockBottomRow}>
-                          <Text style={s.unlockFormula} numberOfLines={2}>
-                            {act.key === "run" ? (
-                              gpsSessionUi.formula
-                            ) : (
-                              <>
-                                {act.effortLabel} ={" "}
-                                <Text style={{ color: C.hotPink }}>{reward.minutes} min</Text>
-                                {" + "}{reward.vp} VP
-                                {" + "}<Text style={{ color: C.coinDarkYellow }}>🪙{coins}</Text>
-                              </>
-                            )}
-                          </Text>
-                          <Pressable style={s.goBtn} onPress={() => !capped && handleLogActivity(act)} disabled={capped}>
-                            <Text style={s.goBtnText}>{capped ? "DONE" : "START"}</Text>
-                          </Pressable>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-                {hasMore && (
-                  <Pressable
-                    style={s.showMoreBtn}
-                    onPress={() => {
-                      setExpandedCategories((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(cat)) next.delete(cat);
-                        else next.add(cat);
-                        return next;
-                      });
-                    }}
-                  >
-                    <Text style={s.showMoreBtnText}>
-                      {isExpanded ? "Show less" : `Show more (${allCat.length - INITIAL_PER_CATEGORY})`}
-                    </Text>
-                    <MaterialIcons name={isExpanded ? "expand-less" : "expand-more"} size={18} color={C.hotPink} />
-                  </Pressable>
-                )}
+          <View style={s.dailyMissionCard}>
+            <View style={s.dailyMissionIcon}><Text style={{ fontSize: 24 }}>🎯</Text></View>
+            <View style={s.flex1}>
+              <Text style={s.dailyMissionTitle}>Daily mission</Text>
+              <Text style={s.dailyMissionSub}>
+                Complete 3 activities · reward 10 coins
+              </Text>
+              <View style={s.dailyMissionTrack}>
+                <View style={[s.dailyMissionFill, { width: `${Math.min(100, ((todaySummary?.missionCount ?? 0) / 3) * 100)}%` }]} />
               </View>
-            );
-          })}
+            </View>
+            <Text style={s.dailyMissionCount}>{todaySummary?.missionCount ?? 0}/3</Text>
+          </View>
+
+          {currentTrainingNode ? (
+            <Pressable style={s.pathMissionCard} onPress={() => { setSelectedNode(currentTrainingNode.id); tabPress("train"); }}>
+              <Text style={s.pathMissionBadge}>DAY {Math.min(30, currentTrainingNode.id)}</Text>
+              <View style={s.flex1}>
+                <Text style={s.pathMissionTitle}>{currentTrainingNode.label}</Text>
+                <Text style={s.pathMissionSub}>
+                  {(currentTrainingNode.activityKeys.length || 1) - currentTrainingNode.completedActivityKeys.length} step(s) left · {currentTrainingNode.reward}
+                </Text>
+              </View>
+              <MaterialIcons name="arrow-forward" size={22} color={C.black} />
+            </Pressable>
+          ) : null}
+
+          <View style={s.sectionHeaderRow}>
+            <Text style={s.sectionTitle}>Recommended for you</Text>
+            <Pressable onPress={() => goTo("activities")}>
+              <Text style={s.sectionLink}>See all 26</Text>
+            </Pressable>
+          </View>
+          <View style={s.fastUnlockGroup}>{recommendedActivities.map(renderActivityCard)}</View>
 
           <Pressable style={s.learningCentreCard} onPress={() => goTo("learningCentre")}>
             <View style={s.learningCentreIconWrap}>
@@ -4750,7 +5153,7 @@ export default function HomeScreen() {
                 <Text style={s.lazyPassTitle}>Lazy pass</Text>
                 <Text style={{ fontSize: 11, fontWeight: "700", color: C.mutedFg, letterSpacing: 0.2 }}>
                   {billingPeriod === "weekly"
-                    ? "Not included on weekly billing."
+                    ? `${freezes} of 1 left this week (UTC)`
                     : billingPeriod === "monthly" || billingPeriod === "yearly"
                       ? `${freezes} of 3 left this month (UTC)`
                       : "Loading your plan…"}
@@ -4762,7 +5165,7 @@ export default function HomeScreen() {
                   Alert.alert(
                     "Lazy pass",
                     billingPeriod === "weekly"
-                      ? "Monthly and yearly plans include 3 streak freezes each calendar month (UTC). You can change plans in Manage Subscription."
+                      ? "You get 1 lazy pass each calendar week (UTC). It protects your streak if you miss a day. Unused passes do not roll over."
                       : "You get 3 lazy passes at the start of each calendar month (UTC). They protect your streak if you miss a day. Unused passes do not roll over."
                   )
                 }
@@ -4772,7 +5175,13 @@ export default function HomeScreen() {
             </View>
             <View style={s.lazyPassActions}>
               {[0, 1, 2].map((idx) => {
-                const included = billingPeriod === "monthly" || billingPeriod === "yearly";
+                const allowance =
+                  billingPeriod === "weekly"
+                    ? 1
+                    : billingPeriod === "monthly" || billingPeriod === "yearly"
+                      ? 3
+                      : 0;
+                const included = idx < allowance;
                 const ready = included && idx < freezes;
                 return (
                   <View key={idx} style={s.lazyPassItem}>
@@ -4785,7 +5194,7 @@ export default function HomeScreen() {
                       <Text style={{ fontSize: 30 }}>🍦</Text>
                     </View>
                     <Text style={s.lazyPassItemLabel}>
-                      {!included ? "—" : ready ? "Ready" : "Spent"}
+                      {!included ? "Not included" : ready ? "Ready" : "Spent"}
                     </Text>
                   </View>
                 );
@@ -4819,24 +5228,29 @@ export default function HomeScreen() {
     return (
       <View style={s.screenBg}>
         <StatusBar style="dark" />
+        {rewardCelebrationModal}
 
         <View style={{ paddingTop: insets.top + 10, paddingHorizontal: 16, paddingBottom: 4 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
             <VoltMascot size={44} skin={profile?.equippedSkin} />
             <View style={{ flex: 1, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 14, borderTopLeftRadius: 4, paddingVertical: 8, paddingHorizontal: 12 }}>
               <Text style={{ fontSize: 12, fontWeight: "800", color: C.black }}>
-                {(() => {
-                  const lines = [
-                    "Keep pushing, you got this!",
-                    "One node at a time. Let's go!",
-                    "Your journey is looking great!",
-                    "Stay focused, stay strong!",
-                    "Every step counts. Crush it!",
-                  ];
-                  return lines[Math.floor(Date.now() / 86400000) % lines.length];
-                })()}
+                {TRAINING_MOTIVATION_LINES[
+                  CURRENT_UTC_DAY_INDEX % TRAINING_MOTIVATION_LINES.length
+                ]}
               </Text>
             </View>
+          </View>
+          <View style={s.trainProgressRow}>
+            <Text style={s.trainProgressText}>
+              {mapNodes.filter((node) => node.type === "completed").length}/30 DAYS COMPLETE
+            </Text>
+            <Text style={s.trainProgressPhase}>
+              {(currentTrainingNode?.id ?? 1) <= 10 ? "FOUNDATION" : (currentTrainingNode?.id ?? 1) <= 20 ? "BUILDING" : "MASTERY"}
+            </Text>
+          </View>
+          <View style={s.trainProgressTrack}>
+            <View style={[s.trainProgressFill, { width: `${Math.min(100, (mapNodes.filter((node) => node.type === "completed").length / 30) * 100)}%` }]} />
           </View>
         </View>
 
@@ -4844,6 +5258,14 @@ export default function HomeScreen() {
           contentContainerStyle={{ paddingTop: 8, paddingBottom: contentPad + (sel ? 180 : 0), paddingHorizontal: 16 }}
           showsVerticalScrollIndicator={false}
         >
+          <Pressable style={s.coinRunCard} onPress={() => setActiveCoinRun(true)}>
+            <View style={s.coinRunIcon}><MaterialIcons name="directions-run" size={24} color={C.black} /></View>
+            <View style={s.flex1}>
+              <Text style={s.coinRunTitle}>Coin Run</Text>
+              <Text style={s.coinRunSub}>Collect coins every 250m · once daily</Text>
+            </View>
+            <Text style={{ fontSize: 22 }}>🪙</Text>
+          </Pressable>
           <View style={{ height: totalH, position: "relative" }}>
             <Svg width={mapW} height={totalH} style={StyleSheet.absoluteFill}>
               <Path d={pathD} fill="none" stroke={C.black} strokeWidth={4} strokeDasharray="12 12" strokeLinecap="round" />
@@ -4936,10 +5358,11 @@ export default function HomeScreen() {
                     {sel.activityKeys.map((k: string) => {
                       const act = ACTIVITY_LOOKUP[k];
                       if (!act) return null;
+                      const activityDone = sel.completedActivityKeys.includes(k);
                       return (
-                        <View key={k} style={{ flexDirection: "row", alignItems: "center", backgroundColor: act.bg, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3 }}>
-                          <MaterialIcons name={act.icon} size={14} color={act.color} />
-                          <Text style={{ fontSize: 11, color: act.color, fontWeight: "700", marginLeft: 3 }}>{act.name}</Text>
+                        <View key={k} style={{ flexDirection: "row", alignItems: "center", backgroundColor: activityDone ? C.mintLight : act.bg, borderRadius: 12, paddingHorizontal: 8, paddingVertical: 3 }}>
+                          <MaterialIcons name={activityDone ? "check-circle" : act.icon} size={14} color={activityDone ? C.mint : act.color} />
+                          <Text style={{ fontSize: 11, color: activityDone ? C.black : act.color, fontWeight: "700", marginLeft: 3 }}>{act.name}</Text>
                         </View>
                       );
                     })}
@@ -4961,13 +5384,18 @@ export default function HomeScreen() {
                 if (sel.type === "current" && isAuthenticated) {
                   const keys = sel.activityKeys ?? [];
                   if (keys.length > 0) {
-                    const firstAct = ACTIVITIES.find((a) => a.key === keys[0]);
+                    const nextKey = keys.find((key: string) => !sel.completedActivityKeys.includes(key));
+                    const firstAct = ACTIVITIES.find((a) => a.key === nextKey);
                     if (firstAct) {
                       handleLogActivity(firstAct);
                       return;
                     }
                   }
-                  try { await completeNode({ nodeId: sel.id }); } catch {}
+                  try {
+                    await completeNode({ nodeId: sel.id });
+                  } catch (error) {
+                    Alert.alert("Could not complete level", error instanceof Error ? error.message : "Try again.");
+                  }
                 }
                 setSelectedNode(null);
               }}
@@ -4997,208 +5425,240 @@ export default function HomeScreen() {
       const pendingReqs = friendRequests ?? [];
       const activityFeed = friendActivity ?? [];
       const acceptedFriends = (friendsList ?? []).filter((f) => f.status === "accepted");
+      const firstRequest = pendingReqs[0];
+      const latestActivity = activityFeed[0];
+      const openAddFriends = () => {
+        if (!myFriendCode) {
+          void generateFriendCode().catch((error) => {
+            Alert.alert(
+              "Could not create friend code",
+              error instanceof Error ? error.message : "Try again.",
+            );
+          });
+        }
+        setAddFriendModalOpen(true);
+      };
 
-      const relativeTime = (ts: number) => {
-        const diff = Math.max(0, Date.now() - ts);
-        if (diff < 60000) return "just now";
-        if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
-        if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
-        return `${Math.floor(diff / 86400000)}d ago`;
+      const handleAcceptRequest = async () => {
+        if (!firstRequest) return;
+        try {
+          await acceptFriend({ requestId: firstRequest._id });
+          Alert.alert("Accepted!", `You and ${firstRequest.displayName} are now friends.`);
+        } catch (error) {
+          Alert.alert("Could not accept", error instanceof Error ? error.message : "Try again.");
+        }
+      };
+
+      const handleRejectRequest = async () => {
+        if (!firstRequest) return;
+        try {
+          await rejectFriend({ requestId: firstRequest._id });
+        } catch (error) {
+          Alert.alert("Could not decline", error instanceof Error ? error.message : "Try again.");
+        }
       };
 
       return (
         <View style={s.flex1}>
           <StatusBar style="dark" />
           <SocialMapScreen
-            headerLeft={
-              <View style={[s.rowCenter, { gap: 4 }]}>
-                <View style={s.socialActivityDot} />
-                <MaterialIcons name="bolt" size={20} color={C.hotPink} />
-              </View>
-            }
-            topInset={insets.top + 8}
+            topInset={insets.top}
             bottomInset={insets.bottom}
+            vp={profileDp}
+            coins={profile?.coinBalance ?? 0}
+            streak={currentStreak}
             onPressLeaderboard={() => setSocialView("ranks")}
-            avatarUrl={profile?.avatarUrl ?? IMG.avatar}
-            speechText="I'm walking here!"
+            onPressStore={() => goTo("store")}
+            onPressFriends={openAddFriends}
             footerCard={
-              <View style={{ gap: 8 }}>
-                {/* Pending friend requests banner */}
-                {pendingReqs.length > 0 && (
-                  <View style={{ backgroundColor: "#FFF3E0", borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 12, gap: 8 }}>
-                    <Text style={{ fontSize: 11, fontWeight: "900", textTransform: "uppercase", color: C.black }}>Friend Requests</Text>
-                    {pendingReqs.map((req) => (
-                      <View key={String(req._id)} style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-                        <View style={{ width: 32, height: 32, borderRadius: 16, backgroundColor: C.mint, borderWidth: 1.5, borderColor: C.black, alignItems: "center", justifyContent: "center" }}>
-                          <Text style={{ fontSize: 13, fontWeight: "900", color: C.black }}>{req.displayName.charAt(0)}</Text>
-                        </View>
-                        <Text style={{ fontSize: 12, fontWeight: "700", color: C.black, flex: 1 }}>{req.displayName}</Text>
-                        <Pressable
-                          onPress={async () => { try { await acceptFriend({ requestId: req._id }); Alert.alert("Accepted!", `You and ${req.displayName} are now friends.`); } catch (e: any) { Alert.alert("Error", e.message); } }}
-                          style={{ backgroundColor: C.mint, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1.5, borderColor: C.black }}
-                        >
-                          <Text style={{ fontSize: 10, fontWeight: "900", color: C.black }}>ACCEPT</Text>
-                        </Pressable>
-                        <Pressable
-                          onPress={async () => { try { await rejectFriend({ requestId: req._id }); } catch (e: any) { Alert.alert("Error", e.message); } }}
-                          style={{ backgroundColor: "#FFE0E0", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 5, borderWidth: 1.5, borderColor: C.black }}
-                        >
-                          <Text style={{ fontSize: 10, fontWeight: "900", color: "#D32F2F" }}>DECLINE</Text>
-                        </Pressable>
-                      </View>
-                    ))}
-                  </View>
-                )}
-
-                {/* Run After Coins button */}
-                <Pressable
-                  onPress={() => setActiveCoinRun(true)}
-                  style={{ flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: C.electricYellow, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 14, ...({ shadowColor: C.black, shadowOffset: { width: 4, height: 4 }, shadowOpacity: 1, shadowRadius: 0, elevation: 4 } as any) }}
-                >
-                  <View style={{ width: 44, height: 44, borderRadius: 12, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center" }}>
-                    <MaterialIcons name="directions-run" size={24} color={C.black} />
-                  </View>
-                  <View style={{ flex: 1 }}>
-                    <Text style={{ fontSize: 13, fontWeight: "900", fontStyle: "italic", textTransform: "uppercase", color: C.black }}>Run After Coins</Text>
-                    <Text style={{ fontSize: 10, fontWeight: "700", color: C.black, opacity: 0.7, marginTop: 1 }}>Collect coins every 250m + earn VP</Text>
-                  </View>
-                  <Text style={{ fontSize: 22 }}>🪙</Text>
-                </Pressable>
-
-                {/* Friend code card */}
-                <Pressable
-                  onPress={() => {
-                    if (!myFriendCode) { generateFriendCode(); }
-                    setAddFriendModalOpen(true);
+              <View>
+                <ScrollView
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  decelerationRate="fast"
+                  snapToInterval={361}
+                  snapToAlignment="start"
+                  contentContainerStyle={s.socialFigmaCarouselContent}
+                  onMomentumScrollEnd={(event) => {
+                    setSocialCardPage(Math.min(2, Math.round(event.nativeEvent.contentOffset.x / 361)));
                   }}
-                  style={s.socialFindFriendsCard}
                 >
-                  <View style={s.findFriendsIcon}>
-                    <MaterialIcons name="person-add" size={22} color={C.white} />
-                  </View>
-                  <View style={s.flex1}>
-                    <Text style={s.findFriendsTitle}>Add Friends</Text>
-                    <Text style={s.findFriendsSub}>
-                      {myFriendCode ? `Your code: ${myFriendCode}` : "Tap to get your friend code"}
-                    </Text>
-                  </View>
-                  <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                    {acceptedFriends.length > 0 && (
-                      <View style={{ backgroundColor: C.hotPink, borderRadius: 10, width: 20, height: 20, alignItems: "center", justifyContent: "center" }}>
-                        <Text style={{ fontSize: 10, fontWeight: "900", color: C.white }}>{acceptedFriends.length}</Text>
+                  <View style={s.socialFigmaCard}>
+                    <View style={s.socialFigmaHeader}>
+                      <View style={s.socialFigmaIcon}>
+                        <MaterialIcons name="person-search" size={34} color={C.black} />
                       </View>
-                    )}
-                    <MaterialIcons name="chevron-right" size={22} color={C.mutedFg} />
-                  </View>
-                </Pressable>
-
-                {/* Activity feed */}
-                {(() => {
-                  const mockFeed = [
-                    { name: "Alex", text: "hit a 7-day streak!", type: "streak" as const, timestamp: Date.now() - 1800000 },
-                    { name: "Jordan", text: "completed a 5K run", type: "workout" as const, timestamp: Date.now() - 5400000 },
-                    { name: "Mia", text: "sent you a gift", type: "gift_sent" as const, timestamp: Date.now() - 14400000 },
-                  ];
-                  const feedItems = activityFeed.length > 0 ? activityFeed : acceptedFriends.length === 0 ? mockFeed : [];
-                  return feedItems.length > 0 ? (
-                    <View style={{ backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 12, gap: 6 }}>
-                      <Text style={{ fontSize: 11, fontWeight: "900", textTransform: "uppercase", color: C.black, marginBottom: 4 }}>Friend Activity</Text>
-                      {feedItems.slice(0, 5).map((item, idx) => (
-                        <View key={`feed-${idx}`} style={{ flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4, borderTopWidth: idx > 0 ? 1 : 0, borderTopColor: "#F0F0F0" }}>
-                          <View style={{ width: 28, height: 28, borderRadius: 14, backgroundColor: item.type === "streak" ? C.electricYellow : item.type === "gift_sent" ? "#B9F2FF" : C.mint, borderWidth: 1.5, borderColor: C.black, alignItems: "center", justifyContent: "center" }}>
-                            <Text style={{ fontSize: 11, fontWeight: "900", color: C.black }}>{item.name.charAt(0)}</Text>
+                      <View style={s.socialFigmaCopy}>
+                        <Text style={s.socialFigmaTitle}>Find More Friends</Text>
+                        <Text style={s.socialFigmaSub}>Build your circle and compare VP</Text>
+                      </View>
+                      <View style={s.socialFriendStack}>
+                        {acceptedFriends.slice(0, 3).map((friend, index) => (
+                          <View key={String(friend._id)} style={[s.socialMiniAvatar, { marginLeft: index === 0 ? 0 : -12, zIndex: 3 - index }]}>
+                            {friend.avatarUrl ? (
+                              <Image source={{ uri: friend.avatarUrl }} style={s.socialMiniAvatarImage} contentFit="cover" />
+                            ) : (
+                              <Text style={s.socialMiniAvatarText}>{friend.displayName.charAt(0).toUpperCase()}</Text>
+                            )}
                           </View>
-                          <View style={s.flex1}>
-                            <Text style={{ fontSize: 11, fontWeight: "700", color: C.black }}>
-                              <Text style={{ fontWeight: "900" }}>{item.name}</Text>{" "}{item.text}
-                            </Text>
+                        ))}
+                        {acceptedFriends.length === 0 ? (
+                          <View style={s.socialMiniAvatar}>
+                            <MaterialIcons name="person-add" size={20} color={C.black} />
                           </View>
-                          <Text style={{ fontSize: 9, fontWeight: "600", color: C.mutedFg }}>{relativeTime(item.timestamp)}</Text>
-                        </View>
-                      ))}
+                        ) : null}
+                      </View>
                     </View>
-                  ) : null;
-                })()}
+                    <Pressable style={s.socialFigmaCta} onPress={openAddFriends}>
+                      <Text style={s.socialFigmaCtaText}>Connect</Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={s.socialFigmaCard}>
+                    <View style={s.socialFigmaHeader}>
+                      <View style={[s.socialFigmaIcon, { backgroundColor: firstRequest ? C.electricYellow : C.mint }]}>
+                        <MaterialIcons name={firstRequest ? "person-add" : "groups"} size={32} color={C.black} />
+                      </View>
+                      <View style={s.socialFigmaCopy}>
+                        <Text style={s.socialFigmaTitle}>
+                          {firstRequest ? "Friend Request" : latestActivity ? "Friend Activity" : "Your Circle"}
+                        </Text>
+                        <Text numberOfLines={2} style={s.socialFigmaSub}>
+                          {firstRequest
+                            ? `${firstRequest.displayName} wants to connect`
+                            : latestActivity
+                              ? `${latestActivity.name} ${latestActivity.text}`
+                              : acceptedFriends.length === 0
+                                ? "Add friends to grow your map"
+                                : `${acceptedFriends.length} friend${acceptedFriends.length === 1 ? "" : "s"} connected`}
+                        </Text>
+                      </View>
+                      {firstRequest ? (
+                        <Pressable style={s.socialRequestDecline} onPress={handleRejectRequest} accessibilityLabel="Decline friend request">
+                          <MaterialIcons name="close" size={22} color={C.black} />
+                        </Pressable>
+                      ) : null}
+                    </View>
+                    <Pressable
+                      style={s.socialFigmaCta}
+                      onPress={firstRequest ? handleAcceptRequest : latestActivity ? () => setSocialView("ranks") : openAddFriends}
+                    >
+                      <Text style={s.socialFigmaCtaText}>
+                        {firstRequest ? "Accept" : latestActivity ? "Leaderboard" : "Invite"}
+                      </Text>
+                    </Pressable>
+                  </View>
+
+                  <View style={s.socialFigmaCard}>
+                    <View style={s.socialFigmaHeader}>
+                      <View style={[s.socialFigmaIcon, { backgroundColor: C.electricYellow }]}>
+                        <MaterialIcons name="directions-run" size={32} color={C.black} />
+                      </View>
+                      <View style={s.socialFigmaCopy}>
+                        <Text style={s.socialFigmaTitle}>Coin Run</Text>
+                        <Text numberOfLines={2} style={s.socialFigmaSub}>
+                          Collect {previewReward("coin_run", 250).coins} coins every 250m with verified GPS
+                        </Text>
+                      </View>
+                      <CoinIcon size={32} />
+                    </View>
+                    <Pressable
+                      style={s.socialFigmaCta}
+                      onPress={() => setActiveCoinRun(true)}
+                      accessibilityRole="button"
+                      accessibilityLabel="Start Coin Run"
+                    >
+                      <Text style={s.socialFigmaCtaText}>Start Run</Text>
+                    </Pressable>
+                  </View>
+                </ScrollView>
+                <View style={s.socialPager}>
+                  <View style={socialCardPage === 0 ? s.socialPagerActive : s.socialPagerInactive} />
+                  <View style={socialCardPage === 1 ? s.socialPagerActive : s.socialPagerInactive} />
+                  <View style={socialCardPage === 2 ? s.socialPagerActive : s.socialPagerInactive} />
+                </View>
               </View>
             }
           />
 
-          {/* Add friend modal */}
           <Modal visible={addFriendModalOpen} transparent animationType="slide" onRequestClose={() => setAddFriendModalOpen(false)}>
-            <View style={{ flex: 1, backgroundColor: "rgba(0,0,0,0.5)", justifyContent: "flex-end" }}>
-              <View style={{ backgroundColor: C.white, borderTopLeftRadius: 28, borderTopRightRadius: 28, borderWidth: 2, borderColor: C.black, padding: 24 }}>
-                <Text style={{ fontSize: 20, fontWeight: "900", color: C.black, marginBottom: 4 }}>Add Friends</Text>
-                <Text style={{ fontSize: 12, fontWeight: "600", color: C.mutedFg, marginBottom: 20 }}>Share your code or enter a friend's code</Text>
+            <Pressable
+              style={s.addFriendBackdrop}
+              onPress={() => {
+                setAddFriendModalOpen(false);
+                setFriendCodeInput("");
+              }}
+            >
+              <KeyboardAvoidingView style={s.addFriendKeyboard} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+                <Pressable style={[s.addFriendSheet, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]} onPress={() => undefined}>
+                  <Text style={s.addFriendTitle}>Add Friends</Text>
+                  <Text style={s.addFriendSubtitle}>Share your code or enter a friend&apos;s code</Text>
 
-                {/* Your code section */}
-                <View style={{ backgroundColor: "#F5F5F5", borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 16, marginBottom: 16, alignItems: "center", gap: 10 }}>
-                  <Text style={{ fontSize: 11, fontWeight: "900", textTransform: "uppercase", color: C.mutedFg, letterSpacing: 1 }}>Your Friend Code</Text>
-                  <Text style={{ fontSize: 32, fontWeight: "900", letterSpacing: 6, color: C.black }}>
-                    {myFriendCode ?? "------"}
-                  </Text>
-                  <View style={{ flexDirection: "row", gap: 8 }}>
+                  <View style={s.addFriendCodeCard}>
+                    <Text style={s.addFriendCodeLabel}>Your Code</Text>
+                    <Text adjustsFontSizeToFit numberOfLines={1} minimumFontScale={0.75} style={s.addFriendCode}>
+                      {(myFriendCode ?? "------").split("").join(" ")}
+                    </Text>
                     <Pressable
                       onPress={async () => {
-                        let code = myFriendCode;
-                        if (!code) { code = await generateFriendCode(); }
-                        if (code) {
-                          try {
-                            await Share.share({ message: `Add me on Volt! My friend code is: ${code}` });
-                          } catch {}
+                        try {
+                          const code = myFriendCode ?? await generateFriendCode();
+                          if (code) await Share.share({ message: `Add me on Volt! My friend code is: ${code}` });
+                        } catch (error) {
+                          Alert.alert("Could not share", error instanceof Error ? error.message : "Try again.");
                         }
                       }}
-                      style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: C.hotPink, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1.5, borderColor: C.black }}
+                      style={s.addFriendShare}
                     >
                       <MaterialIcons name="share" size={14} color={C.white} />
-                      <Text style={{ fontSize: 12, fontWeight: "900", color: C.white }}>SHARE</Text>
+                      <Text style={s.addFriendShareText}>Share</Text>
                     </Pressable>
-                    {!myFriendCode && (
-                      <Pressable
-                        onPress={() => generateFriendCode()}
-                        style={{ flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: C.electricYellow, borderRadius: 10, paddingHorizontal: 14, paddingVertical: 8, borderWidth: 1.5, borderColor: C.black }}
-                      >
-                        <MaterialIcons name="refresh" size={14} color={C.black} />
-                        <Text style={{ fontSize: 12, fontWeight: "900", color: C.black }}>GENERATE</Text>
-                      </Pressable>
-                    )}
                   </View>
-                </View>
 
-                {/* Enter a code */}
-                <Text style={{ fontSize: 11, fontWeight: "900", textTransform: "uppercase", color: C.mutedFg, letterSpacing: 1, marginBottom: 8 }}>Enter Friend Code</Text>
-                <View style={{ flexDirection: "row", gap: 8 }}>
-                  <TextInput
-                    value={friendCodeInput}
-                    onChangeText={(t) => setFriendCodeInput(t.toUpperCase().slice(0, 6))}
-                    placeholder="ABCD12"
-                    placeholderTextColor={C.mutedFg}
-                    maxLength={6}
-                    autoCapitalize="characters"
-                    style={{ flex: 1, backgroundColor: "#F5F5F5", borderWidth: 2, borderColor: C.black, borderRadius: 12, paddingHorizontal: 14, paddingVertical: 10, fontSize: 18, fontWeight: "900", letterSpacing: 4, textAlign: "center", color: C.black }}
-                  />
-                  <Pressable
-                    onPress={async () => {
-                      if (friendCodeInput.length !== 6) { Alert.alert("Invalid", "Enter a 6-character friend code."); return; }
-                      try {
-                        const result = await addFriendByCode({ code: friendCodeInput });
-                        Alert.alert("Friend Added!", `You and ${result.friendName} are now friends!`);
-                        setFriendCodeInput("");
-                        setAddFriendModalOpen(false);
-                      } catch (e: any) {
-                        Alert.alert("Error", e.message);
-                      }
-                    }}
-                    style={{ backgroundColor: C.mint, borderRadius: 12, paddingHorizontal: 16, justifyContent: "center", borderWidth: 2, borderColor: C.black }}
-                  >
-                    <Text style={{ fontSize: 13, fontWeight: "900", color: C.black }}>ADD</Text>
-                  </Pressable>
-                </View>
-
-                <Pressable onPress={() => { setAddFriendModalOpen(false); setFriendCodeInput(""); }} style={{ marginTop: 20, alignItems: "center", paddingVertical: 12 }}>
-                  <Text style={{ fontSize: 14, fontWeight: "800", color: C.mutedFg }}>Close</Text>
+                  <View style={s.addFriendEntryRow}>
+                    <View style={s.addFriendFieldWrap}>
+                      <Text style={s.addFriendFieldLabel}>Enter Friend&apos;s Code</Text>
+                      <TextInput
+                        value={friendCodeInput}
+                        onChangeText={(text) =>
+                          setFriendCodeInput(
+                            text
+                              .toUpperCase()
+                              .replace(/[^A-HJ-NP-Z2-9]/g, "")
+                              .slice(0, 6),
+                          )
+                        }
+                        placeholder="e.g. F R I N W A"
+                        placeholderTextColor={C.mutedFg}
+                        maxLength={6}
+                        autoCapitalize="characters"
+                        autoCorrect={false}
+                        style={s.addFriendInput}
+                      />
+                    </View>
+                    <Pressable
+                      onPress={async () => {
+                        if (friendCodeInput.length !== 6) {
+                          Alert.alert("Invalid code", "Enter a 6-character friend code.");
+                          return;
+                        }
+                        try {
+                          const result = await addFriendByCode({ code: friendCodeInput });
+                          Alert.alert("Friend Added!", `You and ${result.friendName} are now friends!`);
+                          setFriendCodeInput("");
+                          setAddFriendModalOpen(false);
+                        } catch (error) {
+                          Alert.alert("Could not add friend", error instanceof Error ? error.message : "Try again.");
+                        }
+                      }}
+                      style={s.addFriendAddButton}
+                    >
+                      <Text style={s.addFriendAddText}>Add</Text>
+                    </Pressable>
+                  </View>
                 </Pressable>
-              </View>
-            </View>
+              </KeyboardAvoidingView>
+            </Pressable>
           </Modal>
 
           <BottomNav active={activeTab} onPress={tabPress} bottom={insets.bottom} />
@@ -5209,11 +5669,6 @@ export default function HomeScreen() {
     const leagueName = divisionInfo?.leagueName ?? "Bronze";
     const leagueKey = divisionInfo?.league ?? "bronze";
     const leagueColors: Record<string, string> = { bronze: "#CD7F32", silver: "#C0C0C0", gold: "#FFD700", platinum: "#E5E4E2", diamond: "#B9F2FF" };
-    const nextLeagueNames: Record<string, string> = { bronze: "Silver", silver: "Gold", gold: "Platinum", platinum: "Diamond", diamond: "Diamond" };
-    const weekEndsAt = divisionInfo?.weekEndsAt ?? Date.now();
-    const msLeft = Math.max(0, weekEndsAt - Date.now());
-    const daysLeft = Math.floor(msLeft / 86400000);
-    const hoursLeft = Math.floor((msLeft % 86400000) / 3600000);
     const diffBadge = (p?: string, d?: string) => {
       if (!p && !d) return null;
       const icon = p === "fitness" ? "directions-run" : "phone-iphone";
@@ -5227,41 +5682,167 @@ export default function HomeScreen() {
       );
     };
 
-    const tabLabels: Record<string, string> = { weekly: "League", running: "All Time", friends: "Friends" };
     const isLeagueTab = lbTab === "weekly";
+    const scopeOrder = ["weekly", "running", "friends"] as const;
+    const scopeLabels: Record<(typeof scopeOrder)[number], string> = {
+      weekly: "This week",
+      running: "All time",
+      friends: "Friends",
+    };
+    const topRankings = leaderboard.slice(0, 10);
+    const lowerRankings = leaderboard.slice(10);
+    const lowerRankingsAreDemotion =
+      isLeagueTab && lowerRankings.length > 0 && lowerRankings.every((user) => user.inDemotionZone);
+    const leagueSequence = ["bronze", "silver", "gold", "platinum", "diamond"] as const;
+    const trophyColors: Record<(typeof leagueSequence)[number], string> = {
+      bronze: "#CDAA54",
+      silver: "#D8D8D8",
+      gold: "#FFD60A",
+      platinum: "#00CEE5",
+      diamond: "#A96CF2",
+    };
+
+    const cycleLeaderboardScope = () => {
+      const currentIndex = scopeOrder.indexOf(lbTab);
+      setLbTab(scopeOrder[(currentIndex + 1) % scopeOrder.length]);
+    };
+
+    const openLeaderboardUser = (user: (typeof leaderboard)[number]) => {
+      if (user.you) return;
+      setSelectedLbUser({
+        userId: user.userId ?? "",
+        name: user.name,
+        title: user.title,
+        dp: user.dp,
+        persona: user.persona,
+        difficultyLevel: user.difficultyLevel,
+        equippedSkin: user.equippedSkin,
+        avatarUrl: user.avatarUrl,
+      });
+    };
+
+    const renderLeaderboardRow = (
+      user: (typeof leaderboard)[number],
+      index: number,
+      total: number,
+    ) => {
+      const isPromotion = isLeagueTab && user.rank <= 3;
+      const isDemotion = isLeagueTab && Boolean(user.inDemotionZone);
+      return (
+        <Pressable
+          key={`lb-${lbTab}-${user.rank}`}
+          onPress={() => openLeaderboardUser(user)}
+          style={[
+            s.leaderboardFigmaRow,
+            isPromotion ? s.leaderboardPromotionRow : undefined,
+            isDemotion ? s.leaderboardDemotionRow : undefined,
+            user.you && !isPromotion && !isDemotion ? s.leaderboardYouRow : undefined,
+          ]}
+        >
+          <Text style={s.leaderboardFigmaRank}>{user.rank}</Text>
+          <View style={s.leaderboardFigmaAvatar}>
+            <Image source={user.img} style={s.lbAvatarImg} contentFit="cover" />
+          </View>
+          <View style={s.leaderboardFigmaIdentity}>
+            <Text numberOfLines={1} style={s.leaderboardFigmaName}>{user.name}</Text>
+            <Text numberOfLines={1} style={s.leaderboardFigmaRole}>{user.title}</Text>
+          </View>
+          <Text style={[s.leaderboardFigmaVp, isPromotion ? s.leaderboardPromotionVp : undefined]}>{user.dp} VP</Text>
+          {index < total - 1 ? <View style={s.leaderboardFigmaSeparator} /> : null}
+        </Pressable>
+      );
+    };
+    const selectedLbFriendship = selectedLbUser
+      ? (friendsList ?? []).find(
+          (friend) =>
+            String(friend.friendId) === selectedLbUser.userId,
+        )
+      : undefined;
+    const selectedLbIncomingRequest = selectedLbUser
+      ? (friendRequests ?? []).find(
+          (request) =>
+            String(request.fromUserId) === selectedLbUser.userId,
+        )
+      : undefined;
+    const selectedLbIsFriend = selectedLbFriendship?.status === "accepted";
+    const selectedLbRequestPending =
+      selectedLbFriendship?.status === "pending";
 
     return (
       <View style={s.screenBg}>
         <StatusBar style="dark" />
-        <ScrollView contentContainerStyle={[s.mainScroll, { paddingTop: insets.top + 8, paddingBottom: contentPad }]} showsVerticalScrollIndicator={false}>
-          <View style={s.header}>
-            <Text style={s.headerTitle}>Leaderboard</Text>
-            {isLeagueTab && (
-              <View style={[s.divisionPill, { backgroundColor: leagueColors[leagueKey] ?? "#CD7F32" }]}>
-                <MaterialIcons name="military-tech" size={16} color={C.black} />
-                <Text style={s.divisionPillText}>{leagueName} League</Text>
+        <ScrollView
+          contentContainerStyle={[s.leaderboardFigmaScroll, { paddingTop: insets.top + 4, paddingBottom: contentPad }]}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={s.leaderboardFigmaStats}>
+            <View style={s.leaderboardFigmaStatsLeft}>
+              <View style={s.leaderboardVpChipWrap}>
+                <VpChip amount={String(profileDp)} />
               </View>
-            )}
-          </View>
-
-          <View style={s.tabRow}>
-            {(["weekly", "running", "friends"] as const).map((t) => (
-              <Pressable key={t} style={[s.tabPill, lbTab === t ? s.tabPillActive : undefined]} onPress={() => setLbTab(t)}>
-                <Text style={[s.tabPillText, lbTab === t ? s.tabPillTextActive : undefined]}>
-                  {tabLabels[t]}
-                </Text>
+              <Pressable onPress={() => goTo("store")} accessibilityRole="button" accessibilityLabel="Open rewards store">
+                <CoinChip amount={profile?.coinBalance ?? 0} style={s.leaderboardCoinChip} textStyle={s.leaderboardChipText} iconSize={18} />
               </Pressable>
-            ))}
+            </View>
+            <View style={s.leaderboardStreakChip}>
+              <Image source={require("../../assets/expo.icon/Assets/icon-streak.png")} style={s.leaderboardStreakIcon} />
+              <Text style={s.leaderboardChipText}>Day {currentStreak}</Text>
+            </View>
           </View>
 
-          <View style={s.lbCard}>
+          <Pressable style={s.leaderboardFigmaHeader} onPress={() => setSocialView("map")} accessibilityRole="button" accessibilityLabel="Back to Social map">
+            <MaterialIcons name="arrow-back" size={24} color={C.black} />
+            <Text style={s.leaderboardFigmaTitle}>Leaderboard</Text>
+          </Pressable>
+
+          {isLeagueTab ? (
+            <View style={s.leaderboardLeagueCard}>
+              <Text style={s.leaderboardLeagueTitle}>{leagueName} League</Text>
+              <View style={s.leaderboardTrophyClip}>
+                <View style={s.leaderboardTrophyTrack}>
+                  {leagueSequence.map((league) => {
+                    const isCurrentLeague = league === leagueKey;
+                    const trophySize = isCurrentLeague ? 80 : 60;
+                    return (
+                      <View
+                        key={league}
+                        style={[
+                          s.leaderboardTrophy,
+                          { width: trophySize, height: trophySize, opacity: isCurrentLeague ? 1 : 0.5 },
+                        ]}
+                      >
+                        <SvgXml
+                          xml={TROPHY_ICON_XML.replace("#FFD60A", trophyColors[league])}
+                          width={trophySize}
+                          height={trophySize}
+                        />
+                        {isCurrentLeague ? (
+                          <>
+                            <MaterialIcons name="auto-awesome" size={18} color={C.black} style={s.leaderboardTrophySparkTop} />
+                            <MaterialIcons name="auto-awesome" size={16} color={C.black} style={s.leaderboardTrophySparkBottom} />
+                          </>
+                        ) : null}
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+            </View>
+          ) : null}
+
+          <Pressable style={s.leaderboardScopeRow} onPress={cycleLeaderboardScope} accessibilityRole="button" accessibilityLabel={`Change leaderboard, currently ${scopeLabels[lbTab]}`}>
+            <Text style={s.leaderboardScopeLabel}>{scopeLabels[lbTab]}</Text>
+            <MaterialIcons name="keyboard-arrow-down" size={18} color={C.black} />
+          </Pressable>
+
+          <View style={s.leaderboardFigmaCard}>
             {leaderboard.length === 0 ? (
-              <View style={{ paddingVertical: 40, paddingHorizontal: 24, alignItems: "center", gap: 12 }}>
+              <View style={s.leaderboardEmpty}>
                 <MaterialIcons name={lbTab === "friends" ? "group-add" : "leaderboard"} size={40} color={C.mutedFg} />
-                <Text style={{ fontSize: 15, fontWeight: "900", color: C.black, textAlign: "center" }}>
+                <Text style={s.leaderboardEmptyTitle}>
                   {lbTab === "friends" ? "No friends yet" : "No rankings yet"}
                 </Text>
-                <Text style={{ fontSize: 12, fontWeight: "600", color: C.mutedFg, textAlign: "center", lineHeight: 18 }}>
+                <Text style={s.leaderboardEmptyBody}>
                   {lbTab === "friends"
                     ? "Add friends using your friend code on the Social map, or tap any player on the League or All Time leaderboards to add them!"
                     : "Complete activities to earn VP and appear on the leaderboard. Rankings update weekly."}
@@ -5269,72 +5850,33 @@ export default function HomeScreen() {
                 {lbTab === "friends" && (
                   <Pressable
                     onPress={() => { setSocialView("map"); }}
-                    style={{ flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: C.mint, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 10, borderWidth: 2, borderColor: C.black, marginTop: 4 }}
+                    style={s.leaderboardAddFriends}
                   >
                     <MaterialIcons name="person-add" size={16} color={C.black} />
-                    <Text style={{ fontSize: 12, fontWeight: "900", color: C.black }}>ADD FRIENDS</Text>
+                    <Text style={s.leaderboardAddFriendsText}>Add Friends</Text>
                   </Pressable>
                 )}
               </View>
             ) : (
-              leaderboard.map((u, i) => {
-                const inPromo = (u as any).inPromotionZone;
-                const inDemo = (u as any).inDemotionZone;
-                const accentColor = isLeagueTab ? (inPromo ? C.mint : inDemo ? "#FF4444" : "#DDD") : "#DDD";
-                return (
-                  <Pressable
-                    key={`lb-${u.rank}`}
-                    onPress={() => {
-                      if (u.you) return;
-                      setSelectedLbUser({
-                        userId: (u as any).userId,
-                        name: u.name,
-                        title: u.title,
-                        dp: u.dp,
-                        persona: (u as any).persona,
-                        difficultyLevel: (u as any).difficultyLevel,
-                        equippedSkin: (u as any).equippedSkin,
-                        avatarUrl: (u as any).avatarUrl,
-                      });
-                    }}
-                    style={[s.lbRow, u.you ? s.lbRowYou : undefined, i < leaderboard.length - 1 ? s.lbRowBorder : undefined]}
-                  >
-                    <View style={[s.lbAccent, { backgroundColor: accentColor }]} />
-                    <Text style={s.lbRank}>{u.rank}</Text>
-                    <View style={s.lbAvatarWrap}>
-                      <Image source={u.img} style={s.lbAvatarImg} contentFit="cover" />
-                    </View>
-                    <View style={s.flex1}>
-                      <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-                        <Text style={s.lbName}>{u.name}</Text>
-                        {diffBadge((u as any).persona, (u as any).difficultyLevel)}
-                      </View>
-                      <Text style={s.lbTitle}>{u.title}</Text>
-                    </View>
-                    <Text style={s.lbDp}>{u.dp} VP</Text>
-                  </Pressable>
-                );
-              })
+              <>
+                <Text style={s.leaderboardCardTitle}>Top 10</Text>
+                <View style={s.leaderboardRows}>
+                  {topRankings.map((user, index) => renderLeaderboardRow(user, index, topRankings.length))}
+                </View>
+              </>
             )}
           </View>
 
-          {isLeagueTab && (
-            <View style={s.promoCard}>
-              <View style={s.promoTop}>
-                <Text style={s.promoTitle}>Promotion Zone</Text>
-                <Text style={s.promoSub}>Top 3 promote to {nextLeagueNames[leagueKey]}</Text>
+          {lowerRankings.length > 0 ? (
+            <View style={[s.leaderboardFigmaCard, s.leaderboardSecondaryCard]}>
+              <Text style={s.leaderboardCardTitle}>
+                {lowerRankingsAreDemotion ? "Demotion Zone" : isLeagueTab ? "Lower Ranks" : "More Rankings"}
+              </Text>
+              <View style={s.leaderboardRows}>
+                {lowerRankings.map((user, index) => renderLeaderboardRow(user, index, lowerRankings.length))}
               </View>
-              <View style={s.promoTrack}>
-                <View style={[s.promoFill, { width: `${Math.max(5, Math.min(100, divisionInfo?.isInPromotionZone ? 90 : 30))}%` }]} />
-              </View>
-              <Text style={s.promoCountdown}>Resets in {daysLeft}d {hoursLeft}h</Text>
             </View>
-          )}
-
-          <Pressable style={s.backToMapBtn} onPress={() => setSocialView("map")}>
-            <MaterialIcons name="map" size={18} color={C.black} />
-            <Text style={s.backToMapText}>Back to Social Map</Text>
-          </Pressable>
+          ) : null}
         </ScrollView>
 
         {/* Leaderboard profile card modal */}
@@ -5369,28 +5911,48 @@ export default function HomeScreen() {
                   <View style={{ flexDirection: "row", gap: 10, marginTop: 8 }}>
                     <Pressable
                       onPress={() => {
+                        if (!selectedLbIsFriend) return;
                         setGiftTargetUserId(selectedLbUser.userId);
                         setSelectedLbUser(null);
                         setGiftItemId("gift_quick");
                       }}
-                      style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: "#B9F2FF", borderRadius: 12, paddingVertical: 12, borderWidth: 2, borderColor: C.black }}
+                      disabled={!selectedLbIsFriend}
+                      style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: "#B9F2FF", borderRadius: 12, paddingVertical: 12, borderWidth: 2, borderColor: C.black, opacity: selectedLbIsFriend ? 1 : 0.5 }}
                     >
                       <MaterialIcons name="card-giftcard" size={16} color={C.black} />
-                      <Text style={{ fontSize: 12, fontWeight: "900", color: C.black }}>SEND GIFT</Text>
+                      <Text style={{ fontSize: 12, fontWeight: "900", color: C.black }}>
+                        {selectedLbIsFriend ? "SEND GIFT" : "FRIENDS ONLY"}
+                      </Text>
                     </Pressable>
                     <Pressable
                       onPress={async () => {
+                        if (selectedLbIsFriend || selectedLbRequestPending) return;
+                        if (selectedLbIncomingRequest) {
+                          setSelectedLbUser(null);
+                          setSocialView("map");
+                          return;
+                        }
                         try {
                           await sendFriendRequest({ friendId: selectedLbUser.userId as any });
                           Alert.alert("Sent!", `Friend request sent to ${selectedLbUser.name}.`);
+                          setSelectedLbUser(null);
                         } catch (e: any) {
                           Alert.alert("Info", e.message);
                         }
                       }}
-                      style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: C.mint, borderRadius: 12, paddingVertical: 12, borderWidth: 2, borderColor: C.black }}
+                      disabled={selectedLbIsFriend || selectedLbRequestPending}
+                      style={{ flex: 1, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: C.mint, borderRadius: 12, paddingVertical: 12, borderWidth: 2, borderColor: C.black, opacity: selectedLbIsFriend || selectedLbRequestPending ? 0.5 : 1 }}
                     >
                       <MaterialIcons name="person-add" size={16} color={C.black} />
-                      <Text style={{ fontSize: 12, fontWeight: "900", color: C.black }}>ADD FRIEND</Text>
+                      <Text style={{ fontSize: 12, fontWeight: "900", color: C.black }}>
+                        {selectedLbIsFriend
+                          ? "CONNECTED"
+                          : selectedLbRequestPending
+                            ? "PENDING"
+                            : selectedLbIncomingRequest
+                              ? "RESPOND"
+                              : "ADD FRIEND"}
+                      </Text>
                     </Pressable>
                   </View>
 
@@ -5411,105 +5973,226 @@ export default function HomeScreen() {
   // ─── STORE ──────────────────────────────────────────
   if (screen === "store") {
     const ownedSet = new Set((ownedItems ?? []).map((o) => o.itemId));
-    const skinItems = (storeItems ?? []).filter((i) => i.category === "skin");
-    const otherItems = (storeItems ?? []).filter((i) => i.category !== "skin");
+    const skinOrder = ["skin_flame", "skin_ice", "skin_shadow", "skin_rainbow"];
+    const skinItems = (storeItems ?? [])
+      .filter((item) => skinOrder.includes(item.itemId))
+      .sort((a, b) => skinOrder.indexOf(a.itemId) - skinOrder.indexOf(b.itemId));
+    const giftItems = (storeItems ?? [])
+      .filter((item) => item.category === "vp")
+      .sort((a, b) => a.price - b.price);
+    const extraItems = (storeItems ?? []).filter((item) =>
+      ["freeze", "shield_theme", "social"].includes(item.category) || item.itemId === "skin_gold",
+    );
     const coins = profile?.coinBalance ?? 0;
+
+    const confirmStorePurchase = (item: (typeof skinItems)[number]) => {
+      if (coins < item.price) {
+        Alert.alert("Not enough coins", `You need ${item.price} coins.`);
+        return;
+      }
+      Alert.alert(`Buy ${item.name}`, `Spend ${item.price} coins?`, [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Buy",
+          onPress: async () => {
+            try {
+              await purchaseItem({ itemId: item.itemId });
+            } catch (error) {
+              Alert.alert("Could not purchase", error instanceof Error ? error.message : "Try again.");
+            }
+          },
+        },
+      ]);
+    };
+
+    const confirmFuelPurchase = (rate: NonNullable<typeof fuelExchangeRates>[number]) => {
+      if (coins < rate.price) {
+        Alert.alert("Not enough coins", `You need ${rate.price} coins.`);
+        return;
+      }
+      Alert.alert(
+        `Buy ${rate.minutes} extra minutes`,
+        `Spend ${rate.price} coins? This boost can be purchased once per day.`,
+        [
+          { text: "Cancel", style: "cancel" },
+          {
+            text: "Buy",
+            onPress: async () => {
+              try {
+                await exchangeCoinsForFuel({ rateId: rate.id });
+                Alert.alert("Scroll time added", `+${rate.minutes} minutes added to your fuel bank.`);
+              } catch (error) {
+                Alert.alert("Could not purchase", error instanceof Error ? error.message : "Try again.");
+              }
+            },
+          },
+        ],
+      );
+    };
 
     return (
       <View style={s.screenBg}>
         <StatusBar style="dark" />
-        <ScrollView contentContainerStyle={[s.mainScroll, { paddingTop: insets.top + 8, paddingBottom: contentPad }]} showsVerticalScrollIndicator={false}>
-          <View style={s.header}>
-            <Pressable onPress={() => setScreen("today")} style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
-              <MaterialIcons name="arrow-back" size={22} color={C.black} />
-              <Text style={s.headerTitle}>Volt Store</Text>
-            </Pressable>
-            <CoinChip amount={coins} />
-          </View>
-
-          <Text style={{ fontSize: 12, fontWeight: "900", color: C.mutedFg, letterSpacing: 1.5, marginTop: 16, marginBottom: 8 }}>MASCOT SKINS</Text>
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 12 }}>
-            {skinItems.map((item) => {
-              const owned = ownedSet.has(item.itemId);
-              const equipped = profile?.equippedSkin === item.itemId;
-              return (
-                <View key={item.itemId} style={{ width: "47%", backgroundColor: C.white, borderWidth: 2, borderColor: equipped ? C.mint : C.black, borderRadius: 16, padding: 12, alignItems: "center", gap: 8 }}>
-                  <VoltMascot size={60} skin={item.itemId} />
-                  <Text style={{ fontSize: 13, fontWeight: "800", color: C.black }}>{item.name}</Text>
-                  <Text style={{ fontSize: 10, fontWeight: "600", color: C.mutedFg, textAlign: "center" }}>{item.description}</Text>
-                  {equipped ? (
-                    <View style={{ backgroundColor: C.mint, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1.5, borderColor: C.black }}>
-                      <Text style={{ fontSize: 11, fontWeight: "900", color: C.black }}>EQUIPPED</Text>
-                    </View>
-                  ) : owned ? (
-                    <Pressable
-                      onPress={async () => { try { await equipItem({ itemId: item.itemId }); } catch (e: any) { Alert.alert("Error", e.message); } }}
-                      style={{ backgroundColor: C.electricYellow, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1.5, borderColor: C.black }}
-                    >
-                      <Text style={{ fontSize: 11, fontWeight: "900", color: C.black }}>EQUIP</Text>
-                    </Pressable>
-                  ) : (
-                    <Pressable
-                      onPress={async () => {
-                        if (coins < item.price) { Alert.alert("Not enough coins", `You need ${item.price} coins.`); return; }
-                        Alert.alert("Buy " + item.name, `Spend ${item.price} coins?`, [
-                          { text: "Cancel", style: "cancel" },
-                          { text: "Buy", onPress: async () => { try { await purchaseItem({ itemId: item.itemId }); } catch (e: any) { Alert.alert("Error", e.message); } } },
-                        ]);
-                      }}
-                      style={{ backgroundColor: C.hotPink, borderRadius: 8, paddingHorizontal: 12, paddingVertical: 6, borderWidth: 1.5, borderColor: C.black }}
-                    >
-                      <Text style={{ fontSize: 11, fontWeight: "900", color: C.white }}>🪙 {item.price}</Text>
-                    </Pressable>
-                  )}
-                </View>
-              );
-            })}
-          </View>
-
-          <Text style={{ fontSize: 12, fontWeight: "900", color: C.mutedFg, letterSpacing: 1.5, marginTop: 24, marginBottom: 8 }}>SHIELDS & MORE</Text>
-          {otherItems.map((item) => {
-            const owned = ownedSet.has(item.itemId);
-            return (
-              <View key={item.itemId} style={{ flexDirection: "row", alignItems: "center", backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 14, padding: 14, marginBottom: 8, gap: 12 }}>
-                <View style={{ width: 40, height: 40, borderRadius: 10, backgroundColor: item.category === "freeze" ? "#B9F2FF" : item.category === "shield_theme" ? "#2D2D2D" : C.electricYellow, alignItems: "center", justifyContent: "center", borderWidth: 1.5, borderColor: C.black }}>
-                  <MaterialIcons name={item.category === "freeze" ? "ac-unit" : item.category === "shield_theme" ? "shield" : "card-giftcard"} size={20} color={item.category === "shield_theme" ? C.white : C.black} />
-                </View>
-                <View style={s.flex1}>
-                  <Text style={{ fontSize: 14, fontWeight: "800", color: C.black }}>{item.name}</Text>
-                  <Text style={{ fontSize: 11, fontWeight: "600", color: C.mutedFg }}>{item.description}</Text>
-                </View>
-                {!item.isSelfPurchasable ? (
-                  <Pressable
-                    onPress={() => {
-                      if (coins < item.price) { Alert.alert("Not enough coins", `You need ${item.price} coins.`); return; }
-                      setGiftItemId(item.itemId);
-                    }}
-                    style={{ backgroundColor: "#B9F2FF", borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1.5, borderColor: C.black }}
-                  >
-                    <Text style={{ fontSize: 10, fontWeight: "900", color: C.black }}>🎁 GIFT · 🪙{item.price}</Text>
-                  </Pressable>
-                ) : owned ? (
-                  <View style={{ backgroundColor: C.mint, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1.5, borderColor: C.black }}>
-                    <Text style={{ fontSize: 10, fontWeight: "900", color: C.black }}>OWNED</Text>
-                  </View>
-                ) : (
-                  <Pressable
-                    onPress={async () => {
-                      if (coins < item.price) { Alert.alert("Not enough coins", `You need ${item.price} coins.`); return; }
-                      Alert.alert("Buy " + item.name, `Spend ${item.price} coins?`, [
-                        { text: "Cancel", style: "cancel" },
-                        { text: "Buy", onPress: async () => { try { await purchaseItem({ itemId: item.itemId }); } catch (e: any) { Alert.alert("Error", e.message); } } },
-                      ]);
-                    }}
-                    style={{ backgroundColor: C.hotPink, borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6, borderWidth: 1.5, borderColor: C.black }}
-                  >
-                    <Text style={{ fontSize: 10, fontWeight: "900", color: C.white }}>🪙 {item.price}</Text>
-                  </Pressable>
-                )}
+        <ScrollView
+          contentContainerStyle={[s.storeFigmaScroll, { paddingTop: insets.top + 4, paddingBottom: contentPad }]}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={s.leaderboardFigmaStats}>
+            <View style={s.leaderboardFigmaStatsLeft}>
+              <View style={s.leaderboardVpChipWrap}>
+                <VpChip amount={String(profileDp)} />
               </View>
-            );
-          })}
+              <CoinChip amount={coins} style={s.leaderboardCoinChip} textStyle={s.leaderboardChipText} iconSize={18} />
+            </View>
+            <View style={s.leaderboardStreakChip}>
+              <Image source={require("../../assets/expo.icon/Assets/icon-streak.png")} style={s.leaderboardStreakIcon} />
+              <Text style={s.leaderboardChipText}>Day {currentStreak}</Text>
+            </View>
+          </View>
+
+          <Pressable style={s.storeFigmaHeader} onPress={() => setScreen("today")} accessibilityRole="button" accessibilityLabel="Back to Home">
+            <MaterialIcons name="arrow-back" size={24} color={C.black} />
+            <Text style={s.storeFigmaTitle}>Store</Text>
+          </Pressable>
+
+          <View style={s.storeFigmaSection}>
+            <Text style={s.storeFigmaSectionTitle}>Volt Skin</Text>
+            <View style={s.storeMascotDialogueRow}>
+              <VoltMascot size={56} skin={profile?.equippedSkin} />
+              <View style={s.storeMascotDialogue}>
+                <Text style={s.storeMascotDialogueText}>Let&apos;s customize my look!{"\n"}What&apos;s on menu?</Text>
+              </View>
+            </View>
+            <View style={s.storeSkinGrid}>
+              {skinItems.map((item) => {
+                const owned = ownedSet.has(item.itemId);
+                const equipped = profile?.equippedSkin === item.itemId;
+                return (
+                  <View key={item.itemId} style={[s.storeSkinTile, equipped ? s.storeSkinTileEquipped : undefined]}>
+                    <VoltMascot size={52} skin={item.itemId} />
+                    <View style={s.storeSkinCopy}>
+                      <Text style={s.storeSkinName}>{item.name}</Text>
+                      <Text numberOfLines={3} style={s.storeSkinDescription}>{item.description}</Text>
+                    </View>
+                    {equipped ? (
+                      <View style={s.storeStatusPill}>
+                        <Text style={s.storeStatusPillText}>Equipped</Text>
+                      </View>
+                    ) : owned ? (
+                      <Pressable
+                        onPress={async () => {
+                          try {
+                            await equipItem({ itemId: item.itemId });
+                          } catch (error) {
+                            Alert.alert("Could not equip", error instanceof Error ? error.message : "Try again.");
+                          }
+                        }}
+                        style={[s.storeStatusPill, s.storeEquipPill]}
+                      >
+                        <Text style={s.storeStatusPillText}>Equip</Text>
+                      </Pressable>
+                    ) : (
+                      <Pressable onPress={() => confirmStorePurchase(item)} accessibilityLabel={`Buy ${item.name} for ${item.price} coins`}>
+                        <CoinPricePill amount={item.price} />
+                      </Pressable>
+                    )}
+                  </View>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={s.storeFigmaSection}>
+            <Text style={s.storeFigmaSectionTitle}>Send a Gift</Text>
+            <View style={s.storeRewardList}>
+              {giftItems.map((item) => (
+                <Pressable
+                  key={item.itemId}
+                  style={s.storeRewardRow}
+                  onPress={() => {
+                    if (coins < item.price) {
+                      Alert.alert("Not enough coins", `You need ${item.price} coins.`);
+                      return;
+                    }
+                    setGiftItemId(item.itemId);
+                  }}
+                >
+                  <View style={[s.storeRewardIcon, s.storeGiftIcon]}>
+                    <MaterialIcons name="redeem" size={26} color={C.black} />
+                  </View>
+                  <View style={s.storeRewardCopy}>
+                    <Text style={s.storeRewardTitle}>{item.name}</Text>
+                    <Text style={s.storeRewardDescription}>{item.description}</Text>
+                  </View>
+                  <CoinPricePill amount={item.price} />
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          <View style={s.storeFigmaSection}>
+            <Text style={s.storeFigmaSectionTitle}>Buy Scroll Time</Text>
+            <View style={s.storeRewardList}>
+              {(fuelExchangeRates ?? []).map((rate) => (
+                <Pressable key={rate.id} style={s.storeRewardRow} onPress={() => confirmFuelPurchase(rate)}>
+                  <View style={[s.storeRewardIcon, s.storeFuelIcon]}>
+                    <MaterialIcons name="touch-app" size={26} color={C.black} />
+                  </View>
+                  <View style={s.storeRewardCopy}>
+                    <Text style={s.storeRewardTitle}>{rate.label}</Text>
+                    <Text style={s.storeRewardDescription}>Can be used once per day</Text>
+                  </View>
+                  <CoinPricePill amount={rate.price} />
+                </Pressable>
+              ))}
+            </View>
+          </View>
+
+          {extraItems.length > 0 ? (
+            <View style={s.storeFigmaSection}>
+              <Text style={s.storeFigmaSectionTitle}>More Rewards</Text>
+              <View style={s.storeRewardList}>
+                {extraItems.map((item) => {
+                  const owned = ownedSet.has(item.itemId);
+                  const isGiftOnly = !item.isSelfPurchasable;
+                  return (
+                    <Pressable
+                      key={item.itemId}
+                      style={s.storeRewardRow}
+                      onPress={() => {
+                        if (isGiftOnly) {
+                          if (coins < item.price) {
+                            Alert.alert("Not enough coins", `You need ${item.price} coins.`);
+                            return;
+                          }
+                          setGiftItemId(item.itemId);
+                        } else if (!owned) {
+                          confirmStorePurchase(item);
+                        }
+                      }}
+                    >
+                      <View style={[s.storeRewardIcon, { backgroundColor: item.category === "shield_theme" ? "#2D2D2D" : "#B9F2FF" }]}>
+                        <MaterialIcons
+                          name={item.category === "shield_theme" ? "shield" : item.category === "freeze" ? "ac-unit" : "favorite"}
+                          size={24}
+                          color={item.category === "shield_theme" ? C.white : C.black}
+                        />
+                      </View>
+                      <View style={s.storeRewardCopy}>
+                        <Text style={s.storeRewardTitle}>{item.name}</Text>
+                        <Text numberOfLines={2} style={s.storeRewardDescription}>{item.description}</Text>
+                      </View>
+                      {owned ? (
+                        <View style={s.storeStatusPill}><Text style={s.storeStatusPillText}>Owned</Text></View>
+                      ) : (
+                        <CoinPricePill amount={item.price} />
+                      )}
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
+          ) : null}
         </ScrollView>
 
         {/* Gift modal: friend picker (from store) or item picker (from leaderboard) */}
@@ -5547,7 +6230,7 @@ export default function HomeScreen() {
                           <Text style={{ fontSize: 13, fontWeight: "800", color: C.black }}>{item.name}</Text>
                           <Text style={{ fontSize: 10, fontWeight: "600", color: C.mutedFg }}>{item.description}</Text>
                         </View>
-                        <Text style={{ fontSize: 12, fontWeight: "900", color: C.hotPink }}>🪙 {item.price}</Text>
+                        <CoinPricePill amount={item.price} tone="light" />
                       </Pressable>
                     ))}
                   </ScrollView>
@@ -5605,204 +6288,456 @@ export default function HomeScreen() {
   }
 
   // ─── PROFILE ────────────────────────────────────────
+  const profileRankOrder = Object.keys(RANK_THRESHOLDS);
+  const profileRankIndex = profileRankOrder.indexOf(profileRank);
+  const nextProfileRank = profileRankIndex >= 0 ? profileRankOrder[profileRankIndex + 1] : profileRankOrder[1];
+  const vpToNextRank = nextProfileRank
+    ? Math.max(0, RANK_THRESHOLDS[nextProfileRank] - profileDp)
+    : 0;
+  const memberSince = profile?._creationTime
+    ? new Intl.DateTimeFormat("en-GB", { month: "short", year: "numeric" }).format(new Date(profile._creationTime))
+    : "today";
+  const shieldedProfileApps = appsList.filter((app) => app.isLocked).slice(0, 3);
+  const iosShieldSelectionCount = selectionMeta.apps + selectionMeta.categories + selectionMeta.domains;
+  const androidShieldSelectionCount = androidBlockedPackages.length;
+  const profileShieldSelectionCount = isIOS ? iosShieldSelectionCount : androidShieldSelectionCount;
+  const profileShieldPermissionReady = isIOS
+    ? screenTimeAuth === "approved"
+    : androidUsageAccessGranted && androidAccessibilityGranted;
+  const profileShieldConfigured = profileShieldSelectionCount > 0;
+  const shieldUnlockActive = shieldUnlockUntil > shieldClock;
+  const profileShieldStatus = !profileShieldPermissionReady
+    ? "Permission needed"
+    : !profileShieldConfigured
+      ? "Choose apps"
+      : !shieldEnabled
+        ? "Paused"
+        : shieldUnlockActive
+          ? `Unlocked ${formatShieldCountdown(shieldUnlockUntil, shieldClock)}`
+          : "Active";
+  const profileShieldStatusColor = !profileShieldPermissionReady
+    ? C.orange
+    : !profileShieldConfigured || !shieldEnabled
+      ? C.electricYellow
+      : shieldUnlockActive
+        ? C.mint
+        : C.hotPink;
+  const profileShieldSelectionSummary = isIOS
+    ? profileShieldConfigured
+      ? `${selectionMeta.apps} app${selectionMeta.apps === 1 ? "" : "s"}${selectionMeta.categories > 0 ? ` · ${selectionMeta.categories} categor${selectionMeta.categories === 1 ? "y" : "ies"}` : ""}${selectionMeta.domains > 0 ? ` · ${selectionMeta.domains} website${selectionMeta.domains === 1 ? "" : "s"}` : ""}`
+      : "No Apple Screen Time selection yet"
+    : profileShieldConfigured
+      ? `${androidShieldSelectionCount} app${androidShieldSelectionCount === 1 ? "" : "s"} protected`
+      : "No Android apps selected yet";
+  const openProfileEditor = () => {
+    setProfileDraftName(profileName === "Volt User" ? "" : profileName);
+    setProfileDraftGoal(profile?.goal ?? "");
+    setProfileEditorVisible(true);
+  };
+  const saveProfileEdits = async () => {
+    const displayName = profileDraftName.trim();
+    const goal = profileDraftGoal.trim();
+    if (!displayName) {
+      Alert.alert("Add your name", "Please enter a display name before saving.");
+      return;
+    }
+    if (displayName.length > 80 || goal.length > 120) {
+      Alert.alert("Text is too long", "Your name can be up to 80 characters and your goal up to 120 characters.");
+      return;
+    }
+    setProfileSaving(true);
+    try {
+      await updateProfile({
+        displayName,
+        ...(goal ? { goal } : {}),
+      });
+      setProfileEditorVisible(false);
+    } catch (error) {
+      Alert.alert("Could not save profile", error instanceof Error ? error.message : "Please try again.");
+    } finally {
+      setProfileSaving(false);
+    }
+  };
+  const profileStats = [
+    { label: "Total VP", value: profileDp.toLocaleString(), backgroundColor: "#FADB69", labelColor: C.mutedFg },
+    { label: "Day Streak", value: String(currentStreak), backgroundColor: "#8DC2FF", labelColor: C.white },
+    { label: "Minutes Earned", value: String(fuelEconomy?.lifetimeMinutesEarned ?? profile?.lifetimeMinutesEarned ?? 0), backgroundColor: "#B1D7BD", labelColor: C.mutedFg },
+    { label: "Longest Streak", value: String(bestStreak), backgroundColor: "#C491EE", labelColor: C.white },
+  ];
+  const profileQuickLinks = [
+    { key: "settings", title: "Permissions & Device Settings", icon: "settings" as const, color: C.hotPink },
+    { key: "suggest", title: "Suggest a Feature", icon: "lightbulb" as const, color: "#FFFA92" },
+    { key: "help", title: "Help & FAQ", icon: "quiz" as const, color: C.electricYellow },
+  ];
+
+  const handleProfileQuickLink = (key: string) => {
+    if (key === "settings") {
+      Alert.alert("Device Settings", "Manage Volt permissions and system-level settings on your device.", [
+        { text: "Open Settings", onPress: () => void Linking.openSettings() },
+        { text: "Cancel", style: "cancel" },
+      ]);
+      return;
+    }
+    if (key === "suggest") {
+      void Share.share({ message: "Volt feature suggestion: " });
+      return;
+    }
+    Alert.alert(
+      "Help & FAQ",
+      "Earn VP, coins and scroll minutes by completing verified activities. Use Edit under Shielded Apps to change which apps Volt protects.",
+    );
+  };
+
+  const handleProfileSignOut = () => {
+    Alert.alert("Sign out of Volt?", "You can sign back in anytime to continue your progress.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign Out", style: "destructive", onPress: () => void doSignOut() },
+    ]);
+  };
+
   return (
     <View style={s.screenBg}>
       <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={[s.mainScroll, { paddingTop: insets.top + 8, paddingBottom: contentPad }]} showsVerticalScrollIndicator={false}>
-        <View style={s.header}>
-          <View>
-            <Text style={s.headerTitle}>Profile</Text>
-            <Text style={s.headerSub}>Leveling up since Feb 2024</Text>
-          </View>
-          <View style={s.headerRight}>
-            <Pressable style={s.headerIconBtn}>
-              <MaterialIcons name="settings" size={22} color={C.black} />
+      <ScrollView
+        contentContainerStyle={[s.profileFigmaScroll, { paddingTop: insets.top + 8, paddingBottom: contentPad }]}
+        showsVerticalScrollIndicator={false}
+      >
+        <View style={s.profileFigmaHeading}>
+          <Text style={s.profileFigmaTitle}>Profile</Text>
+          <Text style={s.profileFigmaSubtitle}>Leveling up since {memberSince}</Text>
+        </View>
+
+        <View style={s.profileFigmaHeroCard}>
+          <View style={s.profileFigmaIdentityRow}>
+            <Pressable
+              style={s.profileFigmaAvatarWrap}
+              onPress={openProfileEditor}
+              accessibilityRole="button"
+              accessibilityLabel="Edit profile"
+            >
+              <View style={s.profileFigmaAvatarClip}>
+                <Image source={profile?.avatarUrl ?? IMG.avatar} style={s.profileFigmaAvatarImg} contentFit="cover" />
+              </View>
+              <View style={s.profileFigmaEditBadge}>
+                <MaterialIcons name="edit" size={12} color={C.black} />
+              </View>
             </Pressable>
-            {isAuthenticated ? (
-              <Pressable style={s.headerIconBtn} onPress={doSignOut}>
-                <MaterialIcons name="logout" size={22} color={C.hotPink} />
-              </Pressable>
-            ) : null}
+            <View style={s.profileFigmaIdentityCopy}>
+              <Text numberOfLines={1} style={s.profileFigmaName}>{profileName.toUpperCase()}</Text>
+              <View style={s.profileFigmaChipRow}>
+                <View style={[s.profileFigmaChip, s.profileFigmaRankChip]}>
+                  <MaterialIcons name="military-tech" size={18} color={C.black} />
+                  <Text style={s.profileFigmaChipText}>{profileRank}</Text>
+                </View>
+                <View style={[s.profileFigmaChip, s.profileFigmaModeChip]}>
+                  <Text style={s.profileFigmaChipText}>{DIFFICULTY_LABEL[profileDifficulty].tag}</Text>
+                </View>
+              </View>
+            </View>
+          </View>
+          <View style={s.profileFigmaProgressBlock}>
+            <View style={s.profileFigmaProgressHeader}>
+              <View style={s.profileFigmaProgressLabel}>
+                <Text style={s.profileFigmaMedal}>🏅</Text>
+                <Text style={s.profileFigmaProgressTitle}>Rank Progression</Text>
+              </View>
+              <Text style={s.profileFigmaProgressValue}>
+                {nextProfileRank ? `${vpToNextRank.toLocaleString()} VP to ${nextProfileRank}` : "Max rank"}
+              </Text>
+            </View>
+            <View style={s.profileFigmaProgressTrack}>
+              <View style={[s.profileFigmaProgressFill, { width: `${rankProgress.percentToNext}%` }]} />
+            </View>
           </View>
         </View>
 
-        <View style={s.profileCard}>
-          <View style={s.profileAvatarWrap}>
-            <Image source={profile?.avatarUrl ?? IMG.avatar} style={s.profileAvatarImg} contentFit="cover" />
-            <View style={s.profileEditBadge}>
-              <MaterialIcons name="edit" size={10} color={C.black} />
-            </View>
-          </View>
-          <View>
-            <Text style={s.profileName}>{profileName.toUpperCase()}</Text>
-            <View style={s.profileRankPill}>
-              <MaterialIcons name="military-tech" size={14} color={C.black} />
-              <Text style={s.profileRankText}>{profileRank.charAt(0).toUpperCase() + profileRank.slice(1)}</Text>
-            </View>
-          </View>
-        </View>
-
-        <View style={s.statsGrid}>
-          {[
-            { label: "Total VP", val: profileDp.toLocaleString(), color: C.black },
-            { label: "Day Streak", val: String(currentStreak), color: C.hotPink },
-            { label: "Best Streak", val: String(bestStreak), color: C.black },
-            { label: "Fuel bank", val: String(profileMinutes), color: C.mint },
-          ].map((st) => (
-            <View key={st.label} style={s.statBox}>
-              <Text style={s.statLabel}>{st.label.toUpperCase()}</Text>
-              <Text style={[s.statVal, { color: st.color }]}>{st.val}</Text>
+        <View style={s.profileFigmaStatsGrid}>
+          {profileStats.map((stat) => (
+            <View key={stat.label} style={[s.profileFigmaStatCard, { backgroundColor: stat.backgroundColor }]}>
+              <Text style={[s.profileFigmaStatLabel, { color: stat.labelColor }]}>{stat.label}</Text>
+              <Text numberOfLines={1} adjustsFontSizeToFit style={s.profileFigmaStatValue}>{stat.value}</Text>
             </View>
           ))}
         </View>
 
-        {fuelEconomy ? (
-          <View style={s.fuelEconomyCard}>
-            <Text style={s.fuelEconomyTitle}>FUEL & SCROLL BASELINE</Text>
-            {fuelEconomy.baselineToxicMinutesPerDay != null ? (
-              <Text style={s.fuelEconomyLine}>
-                Baseline ~{fuelEconomy.baselineToxicMinutesPerDay}m / day on shielded apps
-                {fuelEconomy.scrollReductionGoalPercent != null
-                  ? ` → target ~${fuelEconomy.targetToxicMinutesPerDay ?? "—"}m (${fuelEconomy.scrollReductionGoalPercent}% less)`
-                  : ""}
+        <View style={s.profileFigmaShieldCard}>
+          <View style={s.profileFigmaShieldHeader}>
+            <Text style={s.profileFigmaSectionTitle}>Shielded Apps</Text>
+            <Pressable
+              style={s.profileFigmaEditButton}
+              onPress={() => {
+                if (isIOS) void openIosShieldPicker();
+                else void openAndroidShieldModal();
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Edit shielded apps"
+            >
+              <Text style={s.profileFigmaEditButtonText}>Edit</Text>
+            </Pressable>
+          </View>
+          <View style={s.profileShieldStatusRow}>
+            <View style={s.profileShieldStatusCopy}>
+              <View style={s.profileShieldStatusIcon}>
+                <MaterialIcons name="shield" size={22} color={C.black} />
+              </View>
+              <View style={s.flex1}>
+                <Text style={s.profileShieldSelectionText}>{profileShieldSelectionSummary}</Text>
+                <Text style={s.profileShieldPrivacyText}>
+                  {isIOS
+                    ? "Selection stays private in Apple Screen Time"
+                    : "Protected using Android Usage Access + Accessibility"}
+                </Text>
+              </View>
+            </View>
+            <View style={[s.profileShieldStatusPill, { backgroundColor: profileShieldStatusColor }]}>
+              <Text style={[s.profileShieldStatusPillText, profileShieldStatusColor === C.hotPink ? { color: C.white } : undefined]}>
+                {profileShieldStatus}
               </Text>
-            ) : (
-              <Text style={s.fuelEconomyMuted}>Set your scroll baseline in onboarding (or update in settings later).</Text>
-            )}
-            <Text style={s.fuelEconomyLine}>
-              Lifetime: {fuelEconomy.lifetimeMinutesEarned}m earned → {fuelEconomy.lifetimeMinutesSpent}m spent on unlocks
-            </Text>
-            <Text style={s.fuelEconomyLine}>
-              This week (UTC): +{fuelEconomy.weekMinutesEarned}m earned, −{fuelEconomy.weekMinutesSpent}m spent, +{fuelEconomy.weekDpEarned} VP
-            </Text>
-            <Text style={s.fuelEconomySub}>
-              Scroll yield: {fuelEconomy.lifetimeMinutesEarned > 0 ? `${Math.round(fuelEconomy.scrollYield * 100)}%` : "—"} of earned fuel used (lower can mean less doomscrolling).
-            </Text>
-            <Text style={s.fuelEconomySpendLabel}>Log fuel used (until Screen Time ties in)</Text>
-            <View style={s.fuelSpendRow}>
-              {[5, 10, 15, 30].map((m) => (
-                <Pressable
-                  key={m}
-                  style={s.fuelSpendChip}
-                  onPress={async () => {
-                    if (profileMinutes < m) {
-                      Alert.alert("Not enough fuel", `You only have ${profileMinutes} min in the bank.`);
-                      return;
-                    }
-                    try {
-                      await claimFuel({ minutes: m });
-                    } catch (e: unknown) {
-                      Alert.alert("Error", e instanceof Error ? e.message : "Could not log spend");
-                    }
-                  }}
-                >
-                  <Text style={s.fuelSpendChipText}>−{m}m</Text>
-                </Pressable>
+            </View>
+          </View>
+
+          {isAndroid && shieldedProfileApps.length > 0 ? (
+            <View style={s.profileFigmaAppsRow}>
+              {shieldedProfileApps.map((app) => (
+                <View key={app.appName} style={s.profileFigmaAppItem}>
+                  <View style={[s.profileFigmaAppCircle, { backgroundColor: app.appColor }]}>
+                    <SvgXml xml={SHIELD_ICON_XML[app.appName as ShieldAppName]} width={32} height={32} />
+                    <View style={s.profileFigmaAppLockBadge}>
+                      <MaterialIcons name="lock" size={12} color={C.hotPink} />
+                    </View>
+                  </View>
+                  <Text numberOfLines={1} style={s.profileFigmaAppName}>{app.appName}</Text>
+                </View>
               ))}
             </View>
-          </View>
-        ) : null}
+          ) : null}
 
-        {profile?.baselineToxicMinutesPerDay ? (() => {
-          const baseline = profile.baselineToxicMinutesPerDay;
-          const reductionPct = profile.scrollReductionGoalPercent ?? 20;
-          const goalMin = Math.round(baseline * (1 - reductionPct / 100));
-          const dailySaved = Math.max(0, baseline - goalMin);
-          const weeklySaved = dailySaved * 7;
-          const barDays = Array.from({ length: 7 }, (_, _i) => {
-            const saved = dailySaved + Math.floor(Math.random() * 10 - 5);
-            return Math.max(0, saved);
-          });
-          const maxBar = Math.max(...barDays, 1);
-          return (
-            <View style={{ backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 18, padding: 16, marginBottom: 12, ...SH4 }}>
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 10 }}>
-                <MaterialIcons name="trending-up" size={18} color={C.mint} />
-                <Text style={{ fontSize: 14, fontWeight: "900", color: C.black, letterSpacing: 0.5 }}>YOUR IMPACT</Text>
+          {!profileShieldConfigured ? (
+            <Pressable
+              style={s.profileFigmaEmptyApps}
+              onPress={() => {
+                if (isIOS) void openIosShieldPicker();
+                else void openAndroidShieldModal();
+              }}
+            >
+              <MaterialIcons name="add-circle-outline" size={22} color={C.hotPink} />
+              <Text style={s.profileFigmaEmptyAppsText}>Choose apps to shield</Text>
+            </Pressable>
+          ) : null}
+
+          {profileShieldConfigured && profileShieldPermissionReady && shieldEnabled ? (
+            <View style={s.profileShieldFuelPanel}>
+              <View style={s.profileShieldFuelHeader}>
+                <Text style={s.profileShieldFuelTitle}>Unlock with fuel</Text>
+                <Text style={s.profileShieldFuelBalance}>{profileMinutes} min available</Text>
               </View>
-              <View style={{ flexDirection: "row", gap: 12, marginBottom: 14 }}>
-                <View style={{ flex: 1, backgroundColor: "#F0FFF4", borderRadius: 12, padding: 10, alignItems: "center" }}>
-                  <Text style={{ fontSize: 10, fontWeight: "800", color: C.mutedFg }}>DAILY SAVED</Text>
-                  <Text style={{ fontSize: 22, fontWeight: "900", color: C.mint }}>{dailySaved}m</Text>
+              {shieldUnlockActive ? (
+                <Text style={s.profileShieldUnlockMessage}>
+                  Apps are available for {formatShieldCountdown(shieldUnlockUntil, shieldClock)}. They will relock automatically.
+                </Text>
+              ) : (
+                <View style={s.profileShieldUnlockButtons}>
+                  {SHIELD_UNLOCK_PRESETS.map((minutes) => (
+                    <Pressable
+                      key={minutes}
+                      disabled={profileMinutes < minutes}
+                      style={[s.profileShieldUnlockButton, profileMinutes < minutes ? s.profileShieldUnlockButtonDisabled : undefined]}
+                      onPress={() => {
+                        Alert.alert(
+                          `Unlock for ${minutes} minutes?`,
+                          `This spends ${minutes} fuel minutes and temporarily opens every shielded app.`,
+                          [
+                            { text: "Cancel", style: "cancel" },
+                            { text: "Unlock", onPress: () => void beginShieldUnlock(minutes) },
+                          ],
+                        );
+                      }}
+                    >
+                      <Text style={s.profileShieldUnlockButtonText}>{minutes} MIN</Text>
+                    </Pressable>
+                  ))}
                 </View>
-                <View style={{ flex: 1, backgroundColor: "#F0FFF4", borderRadius: 12, padding: 10, alignItems: "center" }}>
-                  <Text style={{ fontSize: 10, fontWeight: "800", color: C.mutedFg }}>WEEKLY SAVED</Text>
-                  <Text style={{ fontSize: 22, fontWeight: "900", color: C.mint }}>{weeklySaved}m</Text>
-                </View>
-              </View>
-              <Text style={{ fontSize: 10, fontWeight: "800", color: C.mutedFg, marginBottom: 6, letterSpacing: 1 }}>LAST 7 DAYS</Text>
-              <View style={{ flexDirection: "row", alignItems: "flex-end", gap: 6, height: 60 }}>
-                {barDays.map((saved, i) => (
-                  <View key={`impact-${i}`} style={{ flex: 1, alignItems: "center", gap: 2 }}>
-                    <Text style={{ fontSize: 8, fontWeight: "700", color: C.mutedFg }}>{saved}m</Text>
-                    <View style={{
-                      width: "100%",
-                      height: Math.max(4, (saved / maxBar) * 40),
-                      backgroundColor: C.mint,
-                      borderRadius: 4,
-                      borderWidth: 1,
-                      borderColor: C.black,
-                    }} />
-                  </View>
-                ))}
-              </View>
+              )}
             </View>
-          );
-        })() : null}
+          ) : null}
 
-        <View style={s.rankProgressCard}>
-          <View style={s.rankProgressHeader}>
-            <Text style={s.rankProgressTitle}>Rank Progression</Text>
-            <Text style={s.rankProgressSub}>{rankProgress.label}</Text>
-          </View>
-          <Text style={{ fontSize: 10, fontWeight: "700", color: C.mutedFg, marginTop: -4 }}>
-            VP from workouts and habits feeds this bar — same thresholds as your profile rank (Starter → Legend).
-          </Text>
-          <View style={[s.rankTrack, { marginTop: 8 }]}>
-            <View style={[s.rankFill, { width: `${rankProgress.percentToNext}%` }]} />
+          {profileShieldConfigured && profileShieldPermissionReady ? (
+            <Pressable
+              style={s.profileShieldToggleButton}
+              onPress={() => {
+                const nextEnabled = !shieldEnabled;
+                Alert.alert(
+                  nextEnabled ? "Turn shield on?" : "Pause shield?",
+                  nextEnabled
+                    ? "Your selected apps will be protected again."
+                    : "All selected apps will remain available until you turn the shield back on.",
+                  [
+                    { text: "Cancel", style: "cancel" },
+                    { text: nextEnabled ? "Turn On" : "Pause", onPress: () => void setShieldActive(nextEnabled) },
+                  ],
+                );
+              }}
+            >
+              <MaterialIcons name={shieldEnabled ? "pause-circle-outline" : "play-circle-outline"} size={18} color={C.mutedFg} />
+              <Text style={s.profileShieldToggleText}>{shieldEnabled ? "Pause shield" : "Turn shield on"}</Text>
+            </Pressable>
+          ) : null}
+        </View>
+
+        <View style={s.profileFigmaQuickLinks}>
+          <Text style={s.profileFigmaSectionTitle}>Quick Links</Text>
+          <View style={s.profileFigmaQuickLinksList}>
+            {profileQuickLinks.map((link) => (
+              <Pressable
+                key={link.key}
+                style={s.profileFigmaQuickLinkRow}
+                onPress={() => handleProfileQuickLink(link.key)}
+                accessibilityRole="button"
+                accessibilityLabel={link.title}
+              >
+                <View style={[s.profileFigmaQuickLinkIcon, { backgroundColor: link.color }]}>
+                  <MaterialIcons name={link.icon} size={24} color={link.key === "sleep" ? C.white : C.black} />
+                </View>
+                <Text style={s.profileFigmaQuickLinkText}>{link.title}</Text>
+              </Pressable>
+            ))}
           </View>
         </View>
 
-        {isPro && (
+        {isAuthenticated ? (
           <Pressable
-            style={[s.quickLinkRow, { marginBottom: 12, backgroundColor: C.mintLight, borderColor: C.mint }]}
-            onPress={() => presentCustomerCenter()}
+            style={s.profileSignOutButton}
+            onPress={handleProfileSignOut}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
           >
-            <MaterialIcons name="verified" size={22} color={C.mint} />
-            <Text style={s.quickLinkText}>Manage Subscription</Text>
-            <MaterialIcons name="chevron-right" size={20} color={C.black} />
+            <MaterialIcons name="logout" size={20} color={C.hotPink} />
+            <Text style={s.profileSignOutButtonText}>Sign Out</Text>
           </Pressable>
-        )}
-
-        <Text style={s.quickLinksTitle}>Quick Links</Text>
-        <Pressable style={s.quickLinkRow} onPress={() => setBlockedAppsVisible(true)}>
-          <MaterialIcons name="security" size={22} color={C.hotPink} />
-          <Text style={s.quickLinkText}>Blocked Apps</Text>
-          <MaterialIcons name="chevron-right" size={20} color={C.black} />
-        </Pressable>
-        {[
-          { icon: "tune" as const, title: "Unlock Preferences", color: C.mint },
-          { icon: "link" as const, title: "Connected Apps", color: C.indigo },
-        ].map((lnk) => (
-          <Pressable key={lnk.title} style={s.quickLinkRow}>
-            <MaterialIcons name={lnk.icon} size={22} color={lnk.color} />
-            <Text style={s.quickLinkText}>{lnk.title}</Text>
-            <MaterialIcons name="chevron-right" size={20} color={C.black} />
-          </Pressable>
-        ))}
+        ) : null}
       </ScrollView>
 
-      <Modal visible={blockedAppsVisible} animationType="slide" presentationStyle="pageSheet" onRequestClose={() => setBlockedAppsVisible(false)}>
+      <Modal
+        visible={profileEditorVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          if (!profileSaving) setProfileEditorVisible(false);
+        }}
+      >
+        <View style={s.profileEditorModal}>
+          <View style={s.profileEditorHeader}>
+            <View>
+              <Text style={s.profileEditorTitle}>Edit Profile</Text>
+              <Text style={s.profileEditorSubtitle}>Keep your Volt profile up to date.</Text>
+            </View>
+            <Pressable
+              onPress={() => setProfileEditorVisible(false)}
+              disabled={profileSaving}
+              style={s.blockedAppsClose}
+              accessibilityRole="button"
+              accessibilityLabel="Close edit profile"
+            >
+              <MaterialIcons name="close" size={22} color={C.black} />
+            </Pressable>
+          </View>
+          <View style={s.profileEditorForm}>
+            <Text style={s.profileEditorLabel}>Display Name</Text>
+            <TextInput
+              value={profileDraftName}
+              onChangeText={setProfileDraftName}
+              placeholder="Your name"
+              placeholderTextColor={C.mutedFg}
+              autoCapitalize="words"
+              maxLength={80}
+              style={s.profileEditorInput}
+              editable={!profileSaving}
+            />
+            <Text style={s.profileEditorLabel}>Goal</Text>
+            <TextInput
+              value={profileDraftGoal}
+              onChangeText={setProfileDraftGoal}
+              placeholder="What are you working towards?"
+              placeholderTextColor={C.mutedFg}
+              maxLength={120}
+              multiline
+              style={[s.profileEditorInput, s.profileEditorGoalInput]}
+              editable={!profileSaving}
+            />
+            <Pressable
+              style={[s.profileEditorSaveButton, profileSaving ? s.profileEditorSaveButtonDisabled : undefined]}
+              onPress={() => void saveProfileEdits()}
+              disabled={profileSaving}
+              accessibilityRole="button"
+              accessibilityLabel="Save profile"
+            >
+              {profileSaving ? <ActivityIndicator color={C.white} /> : <Text style={s.profileEditorSaveButtonText}>Save Profile</Text>}
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      {isIOS && iosShieldPickerVisible ? (
+        <DeviceActivitySelectionSheetView
+          style={s.hiddenPickerAnchor}
+          familyActivitySelection={familySelection}
+          onSelectionChange={handleIosShieldSelectionChange}
+          onDismissRequest={commitIosShieldSelection}
+          headerText="Choose apps to shield in Volt"
+        />
+      ) : null}
+
+      <Modal
+        visible={isAndroid && blockedAppsVisible}
+        animationType="slide"
+        presentationStyle="pageSheet"
+        onRequestClose={() => {
+          setBlockedAppsVisible(false);
+          void refreshAndroidShieldPermissions();
+        }}
+      >
         <View style={s.blockedAppsModal}>
           <View style={s.blockedAppsHeader}>
-            <Text style={s.blockedAppsTitle}>Blocked Apps</Text>
-            <Pressable onPress={() => setBlockedAppsVisible(false)} style={s.blockedAppsClose}>
+            <Text style={s.blockedAppsTitle}>Shielded Apps</Text>
+            <Pressable
+              onPress={() => {
+                setBlockedAppsVisible(false);
+                void refreshAndroidShieldPermissions();
+              }}
+              style={s.blockedAppsClose}
+            >
               <MaterialIcons name="close" size={22} color={C.black} />
             </Pressable>
           </View>
           <Text style={s.blockedAppsSub}>
-            Tap an app to unlock it. A confirmation will appear before any change takes effect.
+            Choose the apps Volt should protect. Accessibility permission is required for blocking.
           </Text>
+          {!androidUsageAccessGranted || !androidAccessibilityGranted ? (
+            <View style={s.androidProfilePermissionCard}>
+              <Text style={s.androidProfilePermissionTitle}>Finish Android setup</Text>
+              <Text style={s.androidProfilePermissionBody}>
+                Usage Access measures screen habits. Accessibility detects and redirects protected apps.
+              </Text>
+              <View style={s.androidProfilePermissionButtons}>
+                <Pressable
+                  style={[s.androidProfilePermissionButton, androidUsageAccessGranted ? s.androidProfilePermissionButtonDone : undefined]}
+                  onPress={() => void VoltShieldModule.openUsageAccessSettings()}
+                >
+                  <Text style={s.androidProfilePermissionButtonText}>
+                    {androidUsageAccessGranted ? "Usage ✓" : "Usage Access"}
+                  </Text>
+                </Pressable>
+                <Pressable
+                  style={[s.androidProfilePermissionButton, androidAccessibilityGranted ? s.androidProfilePermissionButtonDone : undefined]}
+                  onPress={() => void VoltShieldModule.openAccessibilitySettings()}
+                >
+                  <Text style={s.androidProfilePermissionButtonText}>
+                    {androidAccessibilityGranted ? "Accessibility ✓" : "Accessibility"}
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          ) : null}
           <ScrollView contentContainerStyle={s.blockedAppsList} showsVerticalScrollIndicator={false}>
             {appsList.map((app) => (
               <Pressable
@@ -5822,23 +6757,27 @@ export default function HomeScreen() {
                         text: action,
                         style: app.isLocked ? "destructive" : "default",
                         onPress: async () => {
-                          toggleAppLock({ appId: app._id });
-                          if (app.isLocked) {
-                            unblockVaultApps();
-                            if (isAndroid) {
-                              const updated = androidBlockedPackages.filter(
-                                (pkg) => pkg !== SHIELD_APP_CONFIGS.find((c) => c.name === app.appName)?.packageName,
-                              );
-                              await VoltShieldModule.setBlockedPackages(updated);
-                            }
-                          } else {
-                            reblockVaultApps();
-                            if (isAndroid) {
-                              const cfg = SHIELD_APP_CONFIGS.find((c) => c.name === app.appName);
-                              if (cfg) {
-                                await VoltShieldModule.setBlockedPackages([...androidBlockedPackages, cfg.packageName]);
+                          try {
+                            await toggleAppLock({ appId: app._id });
+                            if (app.isLocked) {
+                              unblockVaultApps();
+                              if (isAndroid) {
+                                const updated = androidBlockedPackages.filter(
+                                  (pkg) => pkg !== SHIELD_APP_CONFIGS.find((c) => c.name === app.appName)?.packageName,
+                                );
+                                await VoltShieldModule.setBlockedPackages(updated);
+                              }
+                            } else {
+                              reblockVaultApps();
+                              if (isAndroid) {
+                                const cfg = SHIELD_APP_CONFIGS.find((c) => c.name === app.appName);
+                                if (cfg) {
+                                  await VoltShieldModule.setBlockedPackages([...androidBlockedPackages, cfg.packageName]);
+                                }
                               }
                             }
+                          } catch (error) {
+                            Alert.alert("Could not update shielded apps", error instanceof Error ? error.message : "Please try again.");
                           }
                         },
                       },
@@ -5881,6 +6820,40 @@ const s = StyleSheet.create({
   screenBg: { flex: 1, backgroundColor: C.offWhite },
   mainScroll: { paddingHorizontal: 24, gap: 16 },
   rowCenter: { flexDirection: "row", alignItems: "center", gap: 6 },
+  backBtn: { width: 40, height: 40, borderRadius: 20, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  rewardOverlay: { flex: 1, backgroundColor: "rgba(0,0,0,0.55)", alignItems: "center", justifyContent: "center", paddingHorizontal: 28 },
+  rewardCard: { width: "100%", maxWidth: 340, backgroundColor: C.white, borderWidth: 3, borderColor: C.black, borderRadius: 24, padding: 24, alignItems: "center", gap: 14, ...SH8 },
+  rewardEmoji: { fontSize: 48 },
+  rewardTitle: { fontSize: 22, fontWeight: "900", textTransform: "uppercase", textAlign: "center", color: C.black },
+  rewardStatsRow: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8 },
+  rewardStat: { backgroundColor: C.electricYellowLight, borderWidth: 2, borderColor: C.black, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6, fontSize: 13, fontWeight: "900", color: C.black },
+  rewardBonus: { width: "100%", backgroundColor: C.mintLight, borderRadius: 12, padding: 10, textAlign: "center", fontSize: 12, fontWeight: "800", color: C.black },
+  rewardCta: { width: "100%", height: 52, borderRadius: 26, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
+  rewardCtaText: { fontSize: 15, fontWeight: "900", color: C.white },
+  dailyMissionCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: C.electricYellowLight, borderWidth: 2, borderColor: C.black, borderRadius: 18, padding: 14, ...SH4 },
+  dailyMissionIcon: { width: 46, height: 46, borderRadius: 14, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center" },
+  dailyMissionTitle: { fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  dailyMissionSub: { fontSize: 10, fontWeight: "700", color: C.mutedFg, marginTop: 2 },
+  dailyMissionTrack: { height: 8, backgroundColor: C.white, borderWidth: 1, borderColor: C.black, borderRadius: 4, overflow: "hidden", marginTop: 7 },
+  dailyMissionFill: { height: "100%", backgroundColor: C.hotPink },
+  dailyMissionCount: { fontSize: 16, fontWeight: "900", color: C.black },
+  pathMissionCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: C.mintLight, borderWidth: 2, borderColor: C.black, borderRadius: 18, padding: 14, ...SH4 },
+  pathMissionBadge: { backgroundColor: C.mint, borderWidth: 1.5, borderColor: C.black, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 4, fontSize: 9, fontWeight: "900", color: C.black },
+  pathMissionTitle: { fontSize: 13, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  pathMissionSub: { fontSize: 10, fontWeight: "700", color: C.mutedFg, marginTop: 3 },
+  sectionHeaderRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  trainProgressRow: { flexDirection: "row", justifyContent: "space-between", marginTop: 10 },
+  trainProgressText: { fontSize: 10, fontWeight: "900", color: C.black },
+  trainProgressPhase: { fontSize: 10, fontWeight: "900", color: C.hotPink },
+  trainProgressTrack: { height: 9, backgroundColor: C.white, borderWidth: 1.5, borderColor: C.black, borderRadius: 5, overflow: "hidden", marginTop: 5 },
+  trainProgressFill: { height: "100%", backgroundColor: C.hotPink },
+  coinRunCard: { flexDirection: "row", alignItems: "center", gap: 10, backgroundColor: C.electricYellow, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 14, marginBottom: 12, ...SH4 },
+  coinRunIcon: { width: 44, height: 44, borderRadius: 12, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center" },
+  coinRunTitle: { fontSize: 13, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  coinRunSub: { fontSize: 10, fontWeight: "700", color: C.mutedFg, marginTop: 2 },
+  socialEmptyFeed: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 14 },
+  socialEmptyTitle: { fontSize: 12, fontWeight: "900", color: C.black },
+  socialEmptySub: { fontSize: 10, fontWeight: "700", lineHeight: 15, color: C.mutedFg, marginTop: 2 },
 
   splashBrand: { alignItems: "center", gap: 16 },
   splashIcon: { width: 80, height: 80, borderRadius: 24, backgroundColor: C.hotPink, borderWidth: 4, borderColor: C.black, alignItems: "center", justifyContent: "center", transform: [{ rotate: "6deg" }], ...SH8 },
@@ -5891,6 +6864,7 @@ const s = StyleSheet.create({
   skipPill: { minWidth: 64, minHeight: 32, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, paddingHorizontal: 14, alignItems: "center", justifyContent: "center", ...SH2 },
   skipPillText: { fontSize: 12, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.5, color: C.black },
   obScroll: { flexGrow: 1, justifyContent: "center", paddingHorizontal: 24, paddingTop: 80, paddingBottom: 140 },
+  obDiffFigmaScroll: { justifyContent: "flex-start", paddingTop: 126 },
   obCenter: { alignItems: "center", gap: 20 },
   obSlide1Wrap: { alignItems: "center", gap: 36, width: "100%", paddingTop: 40 },
   obSlide1MascotBlock: { alignItems: "center", gap: 12, width: "100%" },
@@ -6020,7 +6994,8 @@ const s = StyleSheet.create({
     borderColor: C.black,
     borderRadius: 16,
   },
-  obGoalBtn: { width: "100%", backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, paddingHorizontal: 16, paddingVertical: 18, ...SH4 },
+  obGoalBtn: { width: "100%", backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, overflow: "hidden", ...SH4 },
+  obGoalBtnHeader: { width: "100%", paddingHorizontal: 16, paddingVertical: 18 },
   obGoalBtnActive: { backgroundColor: C.hotPink },
   obGoalLabel: { fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black },
 
@@ -6046,10 +7021,24 @@ const s = StyleSheet.create({
   obScrollChipActive: { backgroundColor: C.hotPink, ...SH4 },
   obScrollChipText: { fontSize: 11, fontWeight: "900", textTransform: "uppercase", color: C.black },
 
-  obDiffFigmaWrap: { width: "100%", alignItems: "center", gap: 24, paddingTop: 18 },
-  obDiffFigmaHeroRow: { width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  obDiffFigmaWrap: {
+    width: "100%",
+    alignItems: "center",
+    gap: 32,
+    paddingTop: 18,
+  },
+  obDiffFigmaHeroRow: {
+    width: "100%",
+    maxWidth: 329,
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 1,
+  },
   obDiffFigmaMascot: { width: 120, height: 124 },
-  obDiffFigmaBubbleFrame: { width: 195, position: "relative" },
+  obDiffFigmaBubbleFrame: {
+    width: 195,
+    position: "relative",
+  },
   obDiffFigmaBubbleShadow: {
     position: "absolute",
     top: 4,
@@ -6064,6 +7053,7 @@ const s = StyleSheet.create({
   },
   obDiffFigmaBubble: {
     width: 195,
+    minHeight: 72,
     backgroundColor: C.white,
     borderWidth: 2,
     borderColor: C.black,
@@ -6071,6 +7061,7 @@ const s = StyleSheet.create({
     borderBottomLeftRadius: 0,
     paddingHorizontal: 18,
     paddingVertical: 18,
+    justifyContent: "center",
     ...SH4,
   },
   obDiffFigmaBubbleText: {
@@ -6081,8 +7072,11 @@ const s = StyleSheet.create({
     textTransform: "uppercase",
     color: C.black,
   },
-  obDiffFigmaOptions: { width: "100%", gap: 12 },
-  obDiffFigmaCardFrame: { width: "100%", position: "relative" },
+  obDiffFigmaOptions: { width: "100%", maxWidth: 329, gap: 12 },
+  obDiffFigmaCardFrame: {
+    width: "100%",
+    position: "relative",
+  },
   obDiffFigmaCardShadow: {
     position: "absolute",
     top: 4,
@@ -6102,14 +7096,14 @@ const s = StyleSheet.create({
     borderColor: C.black,
     borderRadius: 16,
     paddingHorizontal: 16,
-    paddingVertical: 14,
+    paddingVertical: 16,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 4,
     ...SH4,
   },
-  obDiffFigmaCardActive: { backgroundColor: "#FFF0F6" },
-  obDiffFigmaTextCol: { flex: 1, gap: 2 },
+  obDiffFigmaCardActive: { backgroundColor: C.mint },
+  obDiffFigmaTextCol: { flex: 1 },
   obDiffFigmaTitle: {
     fontSize: 20,
     fontWeight: "700",
@@ -6130,22 +7124,65 @@ const s = StyleSheet.create({
     letterSpacing: -0.4,
     color: "#767373",
   },
-  obDiffFigmaRadio: {
-    width: 24,
-    height: 24,
-    borderRadius: 12,
+  obDiffFigmaDescActive: { color: C.white },
+  obDiffFigmaComparisonRow: {
+    width: 258,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 2,
+    paddingTop: 8,
+  },
+  obDiffFigmaComparisonCard: {
+    width: 115,
     borderWidth: 2,
     borderColor: C.black,
+    borderRadius: 16,
+    padding: 8,
+    justifyContent: "center",
+    ...SH4,
+  },
+  obDiffFigmaComparisonCurrent: { backgroundColor: C.hotPink },
+  obDiffFigmaComparisonGoal: {
+    height: 72,
+    backgroundColor: C.white,
+  },
+  obDiffFigmaComparisonLabel: {
+    fontSize: 14,
+    fontWeight: "700",
+    lineHeight: 24,
+    letterSpacing: -0.4,
+    color: C.black,
+  },
+  obDiffFigmaComparisonCurrentValue: {
+    fontSize: 20,
+    fontWeight: "700",
+    lineHeight: 24,
+    textTransform: "uppercase",
+    color: C.white,
+  },
+  obDiffFigmaComparisonGoalValue: {
+    fontSize: 20,
+    fontWeight: "700",
+    lineHeight: 24,
+    textTransform: "uppercase",
+    color: C.black,
+  },
+  obDiffFigmaArrow: {
+    width: 24,
+    height: 32,
     alignItems: "center",
     justifyContent: "center",
   },
-  obDiffFigmaRadioDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: C.hotPink,
+  obDiffFigmaRadio: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    borderWidth: 2,
+    borderColor: C.black,
   },
+  obDiffFigmaRadioSelected: { backgroundColor: C.hotPink },
   obDiffFigmaNote: {
+    marginTop: -20,
     fontSize: 14,
     fontWeight: "700",
     lineHeight: 24,
@@ -6553,7 +7590,7 @@ const s = StyleSheet.create({
     backgroundColor: C.black,
     borderWidth: 2,
     borderColor: C.black,
-    borderRadius: 20,
+    borderRadius: 16,
   },
   obTrustFigmaCard: {
     width: "100%",
@@ -6561,23 +7598,22 @@ const s = StyleSheet.create({
     backgroundColor: C.white,
     borderWidth: 2,
     borderColor: C.black,
-    borderRadius: 20,
-    paddingHorizontal: 14,
-    paddingVertical: 14,
+    borderRadius: 16,
+    padding: 16,
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
-    ...SH4,
+    gap: 4,
   },
   obTrustFigmaIconWrap: {
     width: 48,
     height: 48,
-    borderRadius: 14,
+    borderRadius: 12,
     backgroundColor: C.white,
     borderWidth: 2,
     borderColor: C.black,
     alignItems: "center",
     justifyContent: "center",
+    flexShrink: 0,
   },
   obTrustFigmaCardText: {
     flex: 1,
@@ -6826,86 +7862,86 @@ const s = StyleSheet.create({
     shadowRadius: 0,
   },
 
-  welHero: { alignItems: "center", justifyContent: "center", paddingTop: 64, paddingBottom: 0, position: "relative" },
-  welGlow: { position: "absolute", width: 256, height: 256, borderRadius: 128, backgroundColor: "rgba(255,214,10,0.2)", top: 20 },
-  welEmojiBadge: { width: 64, height: 64, borderRadius: 32, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", marginTop: -16, ...SH2 },
-  welEmoji: { fontSize: 30 },
-  welTitleWrap: { alignItems: "center", marginTop: 16, gap: 4, paddingHorizontal: 32 },
-  welSubtitle: { fontSize: 14, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1.4, color: C.mutedFg, textAlign: "center" },
-  welTitle: { fontSize: 32, fontWeight: "900", fontStyle: "italic", textTransform: "uppercase", letterSpacing: -1.5, color: C.black, textAlign: "center", lineHeight: 36 },
-  welCard: { marginHorizontal: 24, marginTop: 28, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 20, padding: 24, alignItems: "center", gap: 8, ...SH4 },
-  welCardTitle: { fontSize: 18, fontWeight: "900", fontStyle: "italic", textTransform: "uppercase", color: C.black, textAlign: "center" },
-  welCardQuote: { fontSize: 14, fontWeight: "700", color: C.mutedFg, fontStyle: "italic", textAlign: "center" },
-  welDiffBadge: { backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, borderRadius: 9999, paddingHorizontal: 16, paddingVertical: 10, marginTop: 4, ...SH2 },
-  welDiffText: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 0.5, textAlign: "center" },
-  welPills: { flexDirection: "row", justifyContent: "center", gap: 12, marginTop: 28, paddingHorizontal: 24 },
-  welPill: { flexDirection: "row", alignItems: "center", gap: 8, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 12, paddingHorizontal: 16, paddingVertical: 8, ...SH2 },
-  welPillText: { fontSize: 12, fontWeight: "900", color: C.black },
-  welFooter: { position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 24, paddingTop: 24, alignItems: "center" },
-  welCtaBtn: { width: "100%", height: 56, borderRadius: 9999, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
-  welCtaText: { fontSize: 18, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 0.9 },
+  welScroll: { alignItems: "center" },
+  welHero: { width: 260, height: 260, alignItems: "center", justifyContent: "center", position: "relative" },
+  welGlow: { position: "absolute", width: 260, height: 260, borderRadius: 130, backgroundColor: "#F0D3F4" },
+  welTitle: { marginTop: 23, fontSize: 48, fontWeight: "900", textTransform: "uppercase", letterSpacing: -1.5, color: C.black, textAlign: "center", lineHeight: 48 },
+  welCard: { width: "100%", maxWidth: 361, marginTop: 9, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 16, alignItems: "center", gap: 12, ...SH4 },
+  welCardTitle: { fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black, textAlign: "center", letterSpacing: -0.25 },
+  welCardQuote: { fontSize: 14, fontWeight: "700", color: C.darkGray, textAlign: "center", lineHeight: 24, letterSpacing: -0.4 },
+  welDiffBadge: { backgroundColor: "#B4FFFD", borderWidth: 2, borderColor: C.black, borderRadius: 9999, paddingHorizontal: 8, paddingVertical: 4, minHeight: 32, alignItems: "center", justifyContent: "center", ...SH2 },
+  welDiffText: { fontSize: 12, fontWeight: "900", textTransform: "uppercase", color: C.black, lineHeight: 24, textAlign: "center" },
+  welRewardTitle: { width: "100%", maxWidth: 329, marginTop: 24, fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black, textAlign: "center", letterSpacing: -0.25 },
+  welPills: { flexDirection: "row", justifyContent: "center", gap: 16, marginTop: 13 },
+  welPill: { width: 80, height: 32, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: C.white, borderRadius: 8, borderWidth: 2, borderColor: C.black, paddingHorizontal: 4, ...SH2 },
+  welPillIcon: { width: 24, height: 24 },
+  welPillEmoji: { width: 24, fontSize: 19, lineHeight: 24, textAlign: "center" },
+  welPillText: { fontSize: 12, fontWeight: "900", color: C.black, textTransform: "uppercase", lineHeight: 24 },
+  welFooter: { position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 31, paddingTop: 10, alignItems: "center", backgroundColor: C.offWhite },
+  welCtaBtn: { width: "100%", maxWidth: 329, height: 64, borderRadius: 32, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
+  welCtaText: { fontSize: 20, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 1 },
 
-  hyeTitleWrap: { alignItems: "center", paddingTop: 48, gap: 8, paddingHorizontal: 24 },
-  hyeTitle: { fontSize: 36, fontWeight: "900", textTransform: "uppercase", letterSpacing: -1.8, color: C.black, textAlign: "center", lineHeight: 36 },
-  hyeSubtitle: { fontSize: 14, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1.4, color: C.mutedFg, textAlign: "center", lineHeight: 21 },
-  hyeFlowSection: { marginTop: 40, marginHorizontal: 24, height: 92, position: "relative" },
-  hyeFlowRow: { flexDirection: "row", justifyContent: "space-between", paddingTop: 16, flex: 1 },
-  hyeFlowLine: { position: "absolute", left: 0, right: 0, top: 35, height: 2, backgroundColor: "rgba(26,26,26,0.2)" },
-  hyeFlowItem: { flex: 1, alignItems: "center", zIndex: 1 },
-  hyeFlowIcon: { width: 40, height: 40, borderRadius: 20, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
-  hyeFlowLabel: { marginTop: 8, fontSize: 8, fontWeight: "900", textTransform: "uppercase", color: C.mutedFg, textAlign: "center" },
-  hyeCards: { paddingHorizontal: 24, gap: 16, marginTop: 40 },
+  hyeScroll: { alignItems: "stretch" },
+  hyeTitleWrap: { alignItems: "center", gap: 4, paddingHorizontal: 24 },
+  hyeTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4 },
+  hyeTitle: { fontSize: 48, fontWeight: "900", textTransform: "uppercase", letterSpacing: -1.5, color: C.black, textAlign: "center", lineHeight: 48 },
+  hyeTitleAccent: { color: C.hotPink },
+  hyeSubtitle: { fontSize: 12, fontWeight: "900", textTransform: "uppercase", color: C.darkGray, textAlign: "center", lineHeight: 24 },
+  hyeFlowSection: { marginTop: 24, marginHorizontal: 29, height: 48, position: "relative" },
+  hyeFlowRow: { flexDirection: "row", justifyContent: "space-between" },
+  hyeFlowLine: { position: "absolute", left: 42, right: 42, top: 16, height: 2, backgroundColor: "#C4C3C3" },
+  hyeFlowItem: { width: 42, alignItems: "center", zIndex: 1 },
+  hyeFlowIcon: { width: 34, height: 34 },
+  hyeFlowLabel: { marginTop: 2, fontSize: 10, fontWeight: "900", textTransform: "uppercase", color: C.darkGray, textAlign: "center", lineHeight: 12 },
+  hyeSectionTitle: { marginTop: 32, marginBottom: 12, fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black, textAlign: "center", letterSpacing: -0.25, lineHeight: 17 },
+  hyeRewardsSectionTitle: { marginTop: 24 },
+  hyeCards: { paddingHorizontal: 15, gap: 12, alignItems: "center" },
   hyeCard: {
-    height: 84,
+    width: "100%",
+    maxWidth: 361,
+    height: 96,
     flexDirection: "row",
-    alignItems: "stretch",
+    alignItems: "center",
     backgroundColor: C.white,
     borderWidth: 2,
     borderColor: C.black,
-    borderRadius: 20,
-    overflow: "hidden",
+    borderRadius: 16,
+    padding: 16,
+    gap: 8,
     ...SH4,
   },
-  hyeCardTint: { position: "absolute", left: 0, right: 0, top: 0, bottom: 0 },
-  hyeCardRow: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    paddingLeft: 16,
-    paddingRight: 16,
-  },
   hyeCardIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 64,
+    height: 64,
+    borderRadius: 32,
     borderWidth: 2,
     borderColor: C.black,
     alignItems: "center",
     justifyContent: "center",
-    marginRight: 16,
     overflow: "hidden",
     ...SH2,
   },
-  hyeCardIconGlyph: { width: 26, height: 26 },
-  hyeCardBody: { flex: 1, minWidth: 0, gap: 4, justifyContent: "center" },
-  hyeCardTitleRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 8 },
-  hyeCardName: { fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: -0.35 },
-  hyeBadge: { backgroundColor: C.white, borderWidth: 1, borderColor: C.black, borderRadius: 9999, paddingHorizontal: 6, paddingVertical: 2, minHeight: 17, justifyContent: "center", ...({ shadowColor: "#1A1A1A", shadowOffset: { width: 1, height: 1 }, shadowOpacity: 1, shadowRadius: 0, elevation: 1 } as const) },
-  hyeBadgeText: { fontSize: 7, fontWeight: "900", textTransform: "uppercase", color: C.black, lineHeight: 10.5 },
+  hyeCardIconImage: { width: 32, height: 32 },
+  hyeCardBody: { flex: 1, minWidth: 0, gap: 8, justifyContent: "center" },
+  hyeCardTitleRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 5 },
+  hyeCardName: { fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: -0.25 },
+  hyeBadge: { backgroundColor: C.white, borderWidth: 1, borderColor: C.black, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 2, minHeight: 16, justifyContent: "center" },
+  hyeBadgeText: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", color: C.black, lineHeight: 12 },
   hyeCardFormulaRow: { flexDirection: "row", alignItems: "center", flexWrap: "wrap" },
-  hyeFormulaGrey: { fontSize: 11, fontWeight: "700", color: C.mutedFg, lineHeight: 16.5 },
-  hyeFormulaColor: { fontSize: 11, fontWeight: "700", lineHeight: 16.5 },
-  hyeExplainers: { flexDirection: "row", paddingHorizontal: 24, gap: 12, marginTop: 40 },
-  hyeExpDP: { flex: 1, minHeight: 121, backgroundColor: C.black, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 16, ...SH4 },
-  hyeExpTextBlock: { marginTop: 8, gap: 4 },
-  hyeExpDPTitle: { fontSize: 16, fontWeight: "900", color: C.white, lineHeight: 24 },
-  hyeExpDPDesc: { fontSize: 10, fontWeight: "700", color: "rgba(255,255,255,0.7)", lineHeight: 12.5 },
-  hyeExpMin: { flex: 1, minHeight: 121, backgroundColor: C.mint, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 16, ...SH4 },
-  hyeExpMinTitle: { fontSize: 16, fontWeight: "900", color: C.black, lineHeight: 24 },
-  hyeExpMinDesc: { fontSize: 10, fontWeight: "700", color: "rgba(0,0,0,0.6)", lineHeight: 12.5 },
-  hyeFooter: { position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 24, paddingTop: 24, alignItems: "center", backgroundColor: C.offWhite },
-  hyeCtaBtn: { width: "100%", height: 56, borderRadius: 9999, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
-  hyeCtaText: { fontSize: 18, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: 0.9 },
+  hyeFormulaGrey: { fontSize: 14, fontWeight: "700", color: C.darkGray, lineHeight: 24, letterSpacing: -0.4 },
+  hyeFormulaPink: { fontSize: 14, fontWeight: "700", color: C.hotPink, lineHeight: 24, letterSpacing: -0.4 },
+  hyeStartBtn: { width: 64, height: 32, borderRadius: 16, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  hyeStartBtnText: { fontSize: 12, fontWeight: "900", textTransform: "uppercase", color: C.white },
+  hyeRewards: { paddingHorizontal: 24, gap: 12 },
+  hyeRewardCard: { backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 16, alignItems: "center", justifyContent: "center", gap: 12, ...SH4 },
+  hyeRewardTitleRow: { flexDirection: "row", alignItems: "center", justifyContent: "center" },
+  hyeRewardVpIcon: { width: 32, height: 32 },
+  hyeRewardIcon: { fontSize: 22, lineHeight: 24 },
+  hyeRewardTitle: { fontSize: 20, fontWeight: "900", textTransform: "uppercase", color: C.black, lineHeight: 24 },
+  hyeRewardBody: { fontSize: 14, fontWeight: "700", color: C.darkGray, textAlign: "center", lineHeight: 24, letterSpacing: -0.4 },
+  hyeFooter: { position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 30, paddingTop: 10, alignItems: "center", backgroundColor: C.offWhite },
+  hyeCtaBtn: { width: "100%", maxWidth: 329, height: 64, borderRadius: 32, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
+  hyeCtaText: { fontSize: 20, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 1 },
 
   veTitleWrap: { alignItems: "center", paddingTop: 48, gap: 8, paddingHorizontal: 24 },
   veTitle: { fontSize: 32, fontWeight: "900", fontStyle: "italic", textTransform: "uppercase", letterSpacing: -1.5, color: C.black, textAlign: "center", lineHeight: 36 },
@@ -6955,58 +7991,70 @@ const s = StyleSheet.create({
   veCtaBtn: { width: "100%", height: 56, borderRadius: 9999, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
   veCtaText: { fontSize: 18, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: 0.9 },
 
-  ypTitleWrap: { alignItems: "center", paddingTop: 48, gap: 8, paddingHorizontal: 24 },
-  ypTitle: { fontSize: 36, fontWeight: "900", fontStyle: "italic", textTransform: "uppercase", letterSpacing: -1.8, color: C.black, textAlign: "center", lineHeight: 40 },
-  ypSubtitle: { fontSize: 14, fontWeight: "700", textTransform: "uppercase", letterSpacing: 1.4, color: C.mutedFg, textAlign: "center" },
-  ypMapWrap: { marginHorizontal: 40, marginTop: 32 },
-  ypDivider: { height: 2, backgroundColor: "rgba(26,26,26,0.2)", marginHorizontal: 24, marginTop: 32 },
-  ypLbWrap: { paddingHorizontal: 24, marginTop: 32, alignItems: "center", gap: 8 },
-  ypLbBadge: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: C.electricYellow, borderWidth: 2, borderColor: C.black, borderRadius: 9999, paddingHorizontal: 12, paddingVertical: 4, ...SH2 },
-  ypLbBadgeText: { fontSize: 9, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: 0.45 },
-  ypLbCard: { width: "100%", backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 20, overflow: "hidden", ...SH4 },
-  ypLbRow: { flexDirection: "row", alignItems: "center", paddingHorizontal: 16, height: 58, borderBottomWidth: 2, borderBottomColor: "rgba(26,26,26,0.1)" },
-  ypLbDot: { width: 16, height: 16, borderRadius: 8, backgroundColor: C.mint },
-  ypLbRank: { fontSize: 18, fontWeight: "900", color: C.black, width: 36, marginLeft: 12 },
-  ypLbAvatar: { width: 32, height: 32, borderRadius: 16, borderWidth: 2, borderColor: C.black, backgroundColor: "rgba(0,0,0,0.05)" },
-  ypLbName: { fontSize: 12, fontWeight: "900", textTransform: "uppercase", color: C.black, flex: 1, marginLeft: 12 },
-  ypLbDP: { fontSize: 14, fontWeight: "900", color: C.hotPink },
-  ypLbHint: { fontSize: 10, fontWeight: "700", textTransform: "uppercase", color: C.mutedFg, textAlign: "center", marginTop: 4 },
-  ypSocial: { alignItems: "center", gap: 12, marginTop: 24 },
-  ypAvatarStack: { flexDirection: "row", alignItems: "center" },
-  ypStackAvatar: { width: 24, height: 24, borderRadius: 12, borderWidth: 2, borderColor: C.black },
-  ypStackPlus: { width: 24, height: 24, borderRadius: 12, backgroundColor: C.electricYellow, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center" },
-  ypStackPlusText: { fontSize: 10, fontWeight: "900", color: C.black },
-  ypSocialText: { fontSize: 9, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.9, color: C.black },
-  ypFooter: { position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 24, paddingTop: 24, alignItems: "center", backgroundColor: C.offWhite },
-  ypCtaBtn: { width: "100%", height: 56, borderRadius: 9999, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
-  ypCtaText: { fontSize: 18, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: 0.9 },
+  ypScroll: { alignItems: "stretch" },
+  ypTitleWrap: { alignItems: "center", gap: 4, paddingHorizontal: 8 },
+  ypTitle: { width: "100%", fontSize: 48, fontWeight: "900", textTransform: "uppercase", letterSpacing: -1.5, color: C.black, textAlign: "center", lineHeight: 40 },
+  ypTitleAccent: { color: C.hotPink },
+  ypSubtitle: { fontSize: 12, fontWeight: "900", textTransform: "uppercase", color: C.darkGray, textAlign: "center", lineHeight: 24 },
+  ypMapWrap: { width: "100%", marginTop: 30, position: "relative", overflow: "hidden" },
+  ypPathNode: { position: "absolute", borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  ypLockBadge: { position: "absolute", backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...({ shadowColor: C.black, shadowOffset: { width: 1, height: 1 }, shadowOpacity: 1, shadowRadius: 0, elevation: 1 } as const) },
+  ypFooter: { position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 31, paddingTop: 10, alignItems: "center", backgroundColor: C.offWhite },
+  ypCtaBtn: { width: "100%", maxWidth: 329, height: 64, borderRadius: 32, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
+  ypCtaText: { fontSize: 20, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 1 },
 
-  upHero: { alignItems: "center", justifyContent: "center", paddingTop: 48, paddingBottom: 8, position: "relative" },
-  upGlow: { position: "absolute", width: 160, height: 160, borderRadius: 80, backgroundColor: "rgba(255,214,10,0.2)", top: 48 },
-  upTitle: { fontSize: 36, fontWeight: "900", fontStyle: "italic", textTransform: "uppercase", textAlign: "center", color: C.black, letterSpacing: -1.8, lineHeight: 40, marginTop: 8 },
-  upSubtitle: { fontSize: 14, fontWeight: "700", textTransform: "uppercase", textAlign: "center", color: C.mutedFg, letterSpacing: 1.4, marginTop: 4, fontStyle: "italic" },
-  upFeatures: { paddingHorizontal: 32, gap: 16, marginTop: 32 },
-  upFeatureCard: { flexDirection: "row", alignItems: "center", gap: 16, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 16, ...SH4 },
-  upFeatureIcon: { width: 48, height: 48, borderRadius: 24, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
-  upFeatureText: { flex: 1, gap: 2 },
-  upFeatureTitle: { fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black },
-  upFeatureDesc: { fontSize: 10, fontWeight: "700", color: C.mutedFg },
-  upPlans: { paddingHorizontal: 32, gap: 16, marginTop: 32 },
-  upPlanYearly: { backgroundColor: C.electricYellow, borderWidth: 4, borderColor: C.black, borderRadius: 24, padding: 24, overflow: "visible", ...SH8 },
-  upPlanMonthly: { backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 24, padding: 24, ...SH4 },
-  upPlanTitle: { fontSize: 20, fontWeight: "900", fontStyle: "italic", textTransform: "uppercase", color: C.black, letterSpacing: -0.5 },
-  upPlanPrice: { fontSize: 14, fontWeight: "700", color: C.black },
-  upPlanBilled: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", color: C.mutedFg, letterSpacing: 0.5 },
-  upBestValue: { position: "absolute", top: -16, right: -10, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, borderRadius: 4, paddingHorizontal: 8, paddingVertical: 6, ...SH2 },
-  upBestValueText: { fontSize: 8, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 0.5, textAlign: "center" },
-  upFooter: { position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 32, paddingTop: 24, gap: 12, alignItems: "center", backgroundColor: C.offWhite },
-  upCtaBtn: { width: "100%", height: 64, borderRadius: 9999, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
+  upScroll: { alignItems: "stretch" },
+  upHero: { minHeight: 72, flexDirection: "row", alignItems: "center", justifyContent: "flex-start", gap: 12, paddingHorizontal: 24 },
+  upTitleWrap: { flex: 1, minWidth: 0, alignItems: "flex-start", gap: 0 },
+  upTitle: { width: "100%", fontSize: 30, fontWeight: "900", textTransform: "uppercase", textAlign: "left", color: C.black, letterSpacing: 0, lineHeight: 30 },
+  upTitlePink: { color: C.hotPink },
+  upSubtitle: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", textAlign: "left", color: C.darkGray, lineHeight: 16 },
+  upSectionLabel: { width: "100%", fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: -0.25 },
+  upPlans: { paddingHorizontal: 24, gap: 10, marginTop: 16 },
+  upPlanCard: { width: "100%", minHeight: 82, flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 10, ...SH4 },
+  upPlanCardSelected: { backgroundColor: C.mint },
+  upPlanText: { flex: 1, minWidth: 0, gap: 2 },
+  upPlanHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8, paddingRight: 4 },
+  upPlanTitle: { flexShrink: 1, fontSize: 16, fontWeight: "900", textTransform: "uppercase", color: C.black, lineHeight: 20 },
+  upPlanPrice: { flexShrink: 0, fontSize: 13, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: 0 },
+  upPlanDesc: { fontSize: 12, fontWeight: "700", color: C.darkGray, lineHeight: 17, letterSpacing: 0 },
+  upPlanDescSelected: { color: C.white },
+  upRadio: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: C.black, backgroundColor: C.white },
+  upRadioSelected: { backgroundColor: C.hotPink },
+  upBestValue: { position: "absolute", top: -7, right: 15, backgroundColor: C.electricYellow, borderWidth: 1, borderColor: C.black, borderRadius: 4, paddingHorizontal: 4, paddingVertical: 2 },
+  upBestValueText: { fontSize: 10, fontWeight: "900", textTransform: "uppercase", color: C.black, textAlign: "center" },
+  upFeatures: { paddingHorizontal: 24, gap: 10, marginTop: 18 },
+  upFeatureCard: { width: "100%", minHeight: 68, flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 12, ...SH4 },
+  upFeatureEmoji: { width: 32, fontSize: 24, lineHeight: 32, textAlign: "center" },
+  upFeatureText: { flex: 1, minWidth: 0, gap: 4 },
+  upFeatureTitle: { fontSize: 16, fontWeight: "900", textTransform: "uppercase", color: C.black, lineHeight: 20 },
+  upFeatureDesc: { fontSize: 12, fontWeight: "700", color: C.darkGray, lineHeight: 18, letterSpacing: 0 },
+  upFooter: { position: "absolute", left: 0, right: 0, bottom: 0, paddingHorizontal: 31, paddingTop: 10, alignItems: "center", backgroundColor: C.offWhite },
+  upCtaBtn: { width: "100%", maxWidth: 329, height: 64, borderRadius: 32, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
   upCtaText: { fontSize: 20, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 1 },
   upLegalRow: { flexDirection: "row", gap: 12, alignItems: "center" },
   upLegalLink: { fontSize: 9, fontWeight: "900", textTransform: "uppercase", color: C.mutedFg, letterSpacing: 0.9, textDecorationLine: "underline" },
   upLegalDot: { fontSize: 9, color: C.mutedFg },
   upCloseWrap: { position: "absolute", right: 24 },
-  upCloseBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: "rgba(255,255,255,0.2)", borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  upCloseBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  fpScroll: { alignItems: "stretch" },
+  fpHeroRow: { flexDirection: "row", alignItems: "flex-start", paddingHorizontal: 24, gap: 1 },
+  fpBubble: { flex: 1, minHeight: 224, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, borderBottomLeftRadius: 0, padding: 18, justifyContent: "center", ...SH4 },
+  fpBubbleText: { fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: -0.25, lineHeight: 17 },
+  fpPlans: { paddingHorizontal: 24, gap: 12, marginTop: 22 },
+  welcomeBonusOverlay: { flex: 1, backgroundColor: "rgba(196,195,195,0.4)", alignItems: "center", justifyContent: "center", paddingHorizontal: 44 },
+  welcomeBonusCard: { width: "100%", maxWidth: 304, minHeight: 260, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 16, alignItems: "center", justifyContent: "center", gap: 12, ...SH4 },
+  welcomeBonusTitle: { fontSize: 20, fontWeight: "900", textTransform: "uppercase", color: C.black, textAlign: "center", lineHeight: 24 },
+  welcomeBonusRewards: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 16 },
+  welcomeBonusChip: { minWidth: 80, height: 32, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 4, backgroundColor: C.white, borderRadius: 8, borderWidth: 2, borderColor: C.black, paddingHorizontal: 4, ...SH2 },
+  welcomeBonusChipEmoji: { fontSize: 19, lineHeight: 24 },
+  welcomeBonusChipText: { fontSize: 12, fontWeight: "900", color: C.black, textTransform: "uppercase", lineHeight: 24 },
+  welcomeBonusBody: { width: "100%", fontSize: 14, fontWeight: "700", color: C.darkGray, textAlign: "center", lineHeight: 24, letterSpacing: -0.4 },
+  welcomeBonusCta: { width: "100%", height: 64, borderRadius: 32, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
+  welcomeBonusCtaText: { fontSize: 20, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 1 },
+  postAuthBackWrap: { position: "absolute", left: 24 },
+  postAuthBackBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  postAuthBackBtnLight: { backgroundColor: "rgba(255,255,255,0.1)", borderColor: "rgba(255,255,255,0.2)" },
 
   obPathWrap: { width: "100%", minHeight: 300, paddingVertical: 20, position: "relative" },
   obPathNodes: { alignItems: "center", gap: 48, paddingVertical: 24 },
@@ -7073,7 +8121,8 @@ const s = StyleSheet.create({
   headerSub: { fontSize: 12, fontWeight: "700", color: C.mutedFg, textTransform: "uppercase", letterSpacing: 1.2, marginTop: 4 },
   headerRight: { flexDirection: "row", alignItems: "center", gap: 8 },
   headerIconBtn: { backgroundColor: C.white, borderWidth: 2, borderColor: C.black, padding: 8, borderRadius: 20, ...SH2 },
-  topChipRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  topChipRow: { width: "100%", flexDirection: "row", alignItems: "center", gap: 6 },
+  topChipSlot: { flex: 1, minWidth: 0 },
   vpChip: {
     flex: 1,
     flexDirection: "row",
@@ -7089,21 +8138,14 @@ const s = StyleSheet.create({
   },
   vpChipIcon: { width: 16, height: 16 },
   vpChipText: { fontSize: 11, fontWeight: "800", textTransform: "uppercase", color: C.black },
-  coinChip: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
+  topCoinChip: {
+    width: "100%",
     justifyContent: "center",
-    gap: 4,
-    backgroundColor: C.electricYellow,
-    borderWidth: 2,
-    borderColor: C.black,
-    borderRadius: 100,
     height: 30,
-    ...SH2,
+    paddingVertical: 0,
+    paddingLeft: 0,
+    paddingRight: 0,
   },
-  coinChipIcon: { fontSize: 13 },
-  coinChipText: { fontSize: 11, fontWeight: "800", color: C.black },
   storeChipText: { fontSize: 11, fontWeight: "800", color: C.black },
   storeChip: {
     flex: 1,
@@ -7147,6 +8189,8 @@ const s = StyleSheet.create({
     ...SH4,
   },
   fuelMeterRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center", paddingHorizontal: 4 },
+  fuelMeterLabelWrap: { flexDirection: "row", alignItems: "center", gap: 4 },
+  fuelMeterEmoji: { fontSize: 20 },
   fuelMeterLabel: { fontSize: 12, fontWeight: "800", textTransform: "uppercase", color: C.black },
   fuelMeterValue: { fontSize: 14, fontWeight: "700", color: C.black, letterSpacing: -0.4 },
   dailyLearningTitle: { fontSize: 20, fontWeight: "800", textTransform: "uppercase", color: C.black, letterSpacing: -1 },
@@ -7241,7 +8285,7 @@ const s = StyleSheet.create({
   gaugeLabelRow: { flexDirection: "row", justifyContent: "space-between" },
   gaugeSmall: { fontSize: 10, fontWeight: "900", fontStyle: "italic", letterSpacing: 0.5, color: C.black },
   gaugeOuter: { height: 20, borderWidth: 2, borderColor: C.black, borderRadius: 10, backgroundColor: C.white, padding: 2, overflow: "hidden" },
-  gaugeInner: { height: "100%", backgroundColor: C.mint, borderRadius: 8, borderRightWidth: 2, borderColor: C.black },
+  gaugeInner: { height: "100%", backgroundColor: C.mint, borderRadius: 8, shadowColor: C.mint, shadowOpacity: 0.8, shadowRadius: 8, shadowOffset: { width: 0, height: 0 }, elevation: 4 },
   sectionHeader: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-end", paddingHorizontal: 4 },
   sectionTitle: { fontSize: 20, fontWeight: "900", fontStyle: "italic", color: C.black, textTransform: "uppercase" },
   sectionLink: { fontSize: 10, fontWeight: "900", color: C.hotPink, textTransform: "uppercase", textDecorationLine: "underline" },
@@ -7398,10 +8442,10 @@ const s = StyleSheet.create({
     justifyContent: "center",
     ...SH2,
   },
-  unlockCard: { backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 14, gap: 10, ...SH4 },
+  unlockCard: { flexDirection: "row", alignItems: "center", backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 14, gap: 10, ...SH4 },
   unlockTopRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   unlockBottomRow: { flexDirection: "row", alignItems: "center", gap: 10 },
-  unlockIconCircle: { width: 44, height: 44, borderRadius: 22, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  unlockIconCircle: { width: 64, height: 64, borderRadius: 32, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", shadowColor: C.black, shadowOffset: { width: 2, height: 2 }, shadowOpacity: 1, shadowRadius: 0, elevation: 2 },
   unlockName: { flex: 1, fontSize: 14, fontWeight: "700", textTransform: "uppercase", color: C.black, letterSpacing: -0.25 },
   unlockFormula: { flex: 1, fontSize: 13, fontWeight: "700", color: "#767373", letterSpacing: -0.3 },
   verifyBadge: { backgroundColor: C.white, borderWidth: 1, borderColor: C.black, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 2, flexShrink: 0 },
@@ -7413,6 +8457,145 @@ const s = StyleSheet.create({
   claimSection: { alignItems: "center", gap: 12, paddingVertical: 20 },
   claimLabel: { fontSize: 12, fontWeight: "900", fontStyle: "italic", letterSpacing: 2, color: C.mutedFg },
   claimBtn: { width: 88, height: 88, borderRadius: 44, backgroundColor: C.hotPink, borderWidth: 4, borderColor: C.black, alignItems: "center", justifyContent: "center", shadowColor: "#1A1A1A", shadowOffset: { width: 6, height: 6 }, shadowOpacity: 1, shadowRadius: 0, elevation: 6 },
+
+  socialFigmaCarouselContent: { paddingLeft: 16, paddingRight: 32, gap: 16 },
+  socialFigmaCard: {
+    width: 345,
+    minHeight: 160,
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 16,
+    padding: 16,
+    gap: 16,
+    ...SH4,
+  },
+  socialFigmaHeader: { minHeight: 48, flexDirection: "row", alignItems: "center", gap: 12 },
+  socialFigmaIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 12,
+    backgroundColor: "#00CEE5",
+    borderWidth: 2,
+    borderColor: C.black,
+    alignItems: "center",
+    justifyContent: "center",
+    ...SH2,
+  },
+  socialFigmaCopy: { flex: 1, minWidth: 0 },
+  socialFigmaTitle: { fontSize: 14, lineHeight: 20, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  socialFigmaSub: { fontSize: 12, lineHeight: 18, fontWeight: "700", color: C.mutedFg },
+  socialFriendStack: { minWidth: 32, flexDirection: "row", alignItems: "center", justifyContent: "flex-end" },
+  socialMiniAvatar: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    overflow: "hidden",
+    backgroundColor: C.electricYellow,
+    borderWidth: 2,
+    borderColor: C.black,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  socialMiniAvatarImage: { width: "100%", height: "100%" },
+  socialMiniAvatarText: { fontSize: 13, fontWeight: "900", color: C.black },
+  socialFigmaCta: {
+    width: "100%",
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: C.hotPink,
+    borderWidth: 2,
+    borderColor: C.black,
+    alignItems: "center",
+    justifyContent: "center",
+    ...SH4,
+  },
+  socialFigmaCtaText: { fontSize: 20, lineHeight: 24, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 1 },
+  socialRequestDecline: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    alignItems: "center",
+    justifyContent: "center",
+    ...SH2,
+  },
+  socialPager: { height: 16, marginTop: 8, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  socialPagerActive: { width: 28, height: 8, borderRadius: 4, backgroundColor: C.hotPink, borderWidth: 1, borderColor: C.black },
+  socialPagerInactive: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.white, borderWidth: 1, borderColor: C.black },
+  addFriendBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },
+  addFriendKeyboard: { width: "100%", justifyContent: "flex-end" },
+  addFriendSheet: {
+    width: "100%",
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingTop: 16,
+    paddingHorizontal: 16,
+    gap: 8,
+    ...SH4,
+  },
+  addFriendTitle: { fontSize: 20, lineHeight: 24, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  addFriendSubtitle: { fontSize: 14, lineHeight: 24, fontWeight: "500", color: C.mutedFg, marginBottom: 8 },
+  addFriendCodeCard: {
+    width: "100%",
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 16,
+    padding: 16,
+    gap: 24,
+    ...SH4,
+  },
+  addFriendCodeLabel: { fontSize: 14, lineHeight: 24, fontWeight: "800", textTransform: "uppercase", color: C.black },
+  addFriendCode: { width: "100%", fontSize: 48, lineHeight: 52, fontWeight: "900", letterSpacing: -1.5, color: C.black },
+  addFriendShare: {
+    alignSelf: "flex-start",
+    height: 32,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    backgroundColor: C.hotPink,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    ...SH2,
+  },
+  addFriendShareText: { fontSize: 12, lineHeight: 16, fontWeight: "900", textTransform: "uppercase", color: C.white },
+  addFriendEntryRow: { width: "100%", marginTop: 8, flexDirection: "row", alignItems: "flex-end", gap: 8 },
+  addFriendFieldWrap: { flex: 1, gap: 4 },
+  addFriendFieldLabel: { fontSize: 12, lineHeight: 16, fontWeight: "800", textTransform: "uppercase", color: C.black },
+  addFriendInput: {
+    width: "100%",
+    height: 64,
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 16,
+    paddingHorizontal: 16,
+    fontSize: 14,
+    fontWeight: "700",
+    color: C.black,
+    ...SH4,
+  },
+  addFriendAddButton: {
+    width: 96,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: C.hotPink,
+    borderWidth: 2,
+    borderColor: C.black,
+    alignItems: "center",
+    justifyContent: "center",
+    ...SH4,
+  },
+  addFriendAddText: { fontSize: 20, lineHeight: 24, fontWeight: "900", textTransform: "uppercase", color: C.white, letterSpacing: 1 },
 
   socialActivityDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.orange },
   /** Find-friends row inside SocialMapScreen footer (not absolutely positioned). */
@@ -7435,6 +8618,229 @@ const s = StyleSheet.create({
   friendAva: { width: 28, height: 28, borderRadius: 14, borderWidth: 2, borderColor: C.black },
   friendAvaPlus: { backgroundColor: C.electricYellow, alignItems: "center", justifyContent: "center" },
   friendAvaPlusText: { fontSize: 10, fontWeight: "900", color: C.black },
+
+  leaderboardFigmaScroll: { paddingHorizontal: 24 },
+  leaderboardFigmaStats: {
+    width: "100%",
+    height: 32,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  leaderboardFigmaStatsLeft: { height: 32, flexDirection: "row", alignItems: "center", gap: 8 },
+  leaderboardVpChipWrap: { width: 76, height: 30 },
+  leaderboardCoinChip: { width: 75, height: 30, minHeight: 30, justifyContent: "center", paddingVertical: 0 },
+  leaderboardStreakChip: {
+    minWidth: 70,
+    height: 30,
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 100,
+    ...SH2,
+  },
+  leaderboardStreakIcon: { width: 18, height: 18 },
+  leaderboardChipText: { fontSize: 11, lineHeight: 20, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  leaderboardFigmaHeader: { marginTop: 12, flexDirection: "row", alignItems: "center", gap: 0 },
+  leaderboardFigmaTitle: {
+    fontSize: 20,
+    lineHeight: 24,
+    fontWeight: "900",
+    letterSpacing: -1,
+    textTransform: "uppercase",
+    color: C.black,
+  },
+  leaderboardLeagueCard: {
+    width: "100%",
+    minHeight: 140,
+    marginTop: 24,
+    paddingHorizontal: 8,
+    paddingVertical: 16,
+    gap: 16,
+    overflow: "hidden",
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 20,
+    ...SH4,
+  },
+  leaderboardLeagueTitle: { fontSize: 14, lineHeight: 17, fontWeight: "800", letterSpacing: -0.25, textTransform: "uppercase", color: C.black },
+  leaderboardTrophyClip: { width: "100%", height: 80, overflow: "hidden", alignItems: "center", justifyContent: "center" },
+  leaderboardTrophyTrack: { height: 80, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  leaderboardTrophy: { position: "relative", alignItems: "center", justifyContent: "center" },
+  leaderboardTrophySparkTop: { position: "absolute", top: 1, right: 1 },
+  leaderboardTrophySparkBottom: { position: "absolute", bottom: 10, left: 2 },
+  leaderboardScopeRow: { alignSelf: "flex-start", marginTop: 24, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", gap: 2 },
+  leaderboardScopeLabel: { fontSize: 14, lineHeight: 17, fontWeight: "800", letterSpacing: -0.25, textTransform: "uppercase", color: C.black },
+  leaderboardFigmaCard: {
+    width: "100%",
+    marginTop: 12,
+    paddingHorizontal: 8,
+    paddingVertical: 16,
+    gap: 16,
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 20,
+    ...SH4,
+  },
+  leaderboardSecondaryCard: { marginTop: 24 },
+  leaderboardCardTitle: { fontSize: 14, lineHeight: 17, fontWeight: "800", letterSpacing: -0.25, textTransform: "uppercase", color: C.black },
+  leaderboardRows: { gap: 16 },
+  leaderboardFigmaRow: {
+    position: "relative",
+    minHeight: 50,
+    padding: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    borderRadius: 4,
+  },
+  leaderboardPromotionRow: { backgroundColor: "#C0FFEF" },
+  leaderboardDemotionRow: { backgroundColor: "#FCD6D6" },
+  leaderboardYouRow: { backgroundColor: "#FFF4B8" },
+  leaderboardFigmaSeparator: { position: "absolute", left: 4, right: 4, bottom: -9, height: 2, backgroundColor: "#C7C7C7" },
+  leaderboardFigmaRank: { width: 27, fontSize: 20, lineHeight: 24, fontWeight: "800", textAlign: "center", color: C.black },
+  leaderboardFigmaAvatar: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    overflow: "hidden",
+    backgroundColor: C.mint,
+    borderWidth: 2,
+    borderColor: C.black,
+    ...SH2,
+  },
+  leaderboardFigmaIdentity: { flex: 1, minWidth: 0, paddingLeft: 8, paddingRight: 4 },
+  leaderboardFigmaName: { fontSize: 14, lineHeight: 17, fontWeight: "800", letterSpacing: -0.25, textTransform: "uppercase", color: C.black },
+  leaderboardFigmaRole: { fontSize: 14, lineHeight: 24, fontWeight: "700", letterSpacing: -0.4, color: C.mutedFg },
+  leaderboardFigmaVp: { flexShrink: 0, fontSize: 20, lineHeight: 24, fontWeight: "800", textTransform: "uppercase", color: C.black },
+  leaderboardPromotionVp: { color: C.hotPink },
+  leaderboardEmpty: { paddingVertical: 40, paddingHorizontal: 16, alignItems: "center", gap: 12 },
+  leaderboardEmptyTitle: { fontSize: 15, fontWeight: "900", color: C.black, textAlign: "center" },
+  leaderboardEmptyBody: { fontSize: 12, lineHeight: 18, fontWeight: "600", color: C.mutedFg, textAlign: "center" },
+  leaderboardAddFriends: {
+    marginTop: 4,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    backgroundColor: C.mint,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 12,
+    ...SH2,
+  },
+  leaderboardAddFriendsText: { fontSize: 12, fontWeight: "900", textTransform: "uppercase", color: C.black },
+
+  storeFigmaScroll: { paddingHorizontal: 24 },
+  storeFigmaHeader: { marginTop: 12, flexDirection: "row", alignItems: "center" },
+  storeFigmaTitle: {
+    fontSize: 20,
+    lineHeight: 24,
+    fontWeight: "900",
+    letterSpacing: -1,
+    textTransform: "uppercase",
+    color: C.black,
+  },
+  storeFigmaSection: {
+    width: "100%",
+    marginTop: 24,
+    paddingHorizontal: 8,
+    paddingVertical: 16,
+    gap: 16,
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 20,
+    ...SH4,
+  },
+  storeFigmaSectionTitle: {
+    fontSize: 14,
+    lineHeight: 17,
+    fontWeight: "800",
+    letterSpacing: -0.25,
+    textTransform: "uppercase",
+    color: C.black,
+  },
+  storeMascotDialogueRow: { width: "100%", minHeight: 80, flexDirection: "row", alignItems: "flex-end", justifyContent: "center", gap: 4 },
+  storeMascotDialogue: {
+    flex: 1,
+    minHeight: 64,
+    maxWidth: 232,
+    padding: 14,
+    justifyContent: "center",
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    borderBottomRightRadius: 16,
+    ...SH4,
+  },
+  storeMascotDialogueText: { fontSize: 14, lineHeight: 17, fontWeight: "800", letterSpacing: -0.25, textTransform: "uppercase", color: C.black },
+  storeSkinGrid: { width: "100%", flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8 },
+  storeSkinTile: {
+    width: 152,
+    height: 200,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    gap: 8,
+    alignItems: "center",
+    backgroundColor: C.offWhite,
+    borderRadius: 8,
+  },
+  storeSkinTileEquipped: { backgroundColor: "#E5FFF4", borderWidth: 2, borderColor: C.mint },
+  storeSkinCopy: { flex: 1, width: "100%", alignItems: "center" },
+  storeSkinName: { fontSize: 14, lineHeight: 24, fontWeight: "800", letterSpacing: -0.4, textAlign: "center", color: C.black },
+  storeSkinDescription: { fontSize: 10, lineHeight: 12, fontWeight: "800", textTransform: "uppercase", textAlign: "center", color: C.mutedFg },
+  storeStatusPill: {
+    minHeight: 30,
+    paddingHorizontal: 12,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: C.mint,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 100,
+    ...SH2,
+  },
+  storeEquipPill: { backgroundColor: C.electricYellow },
+  storeStatusPillText: { fontSize: 11, lineHeight: 16, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  storeRewardList: { width: "100%", gap: 12 },
+  storeRewardRow: {
+    width: "100%",
+    minHeight: 84,
+    padding: 16,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: C.white,
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 16,
+    ...SH4,
+  },
+  storeRewardIcon: {
+    width: 48,
+    height: 48,
+    flexShrink: 0,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 2,
+    borderColor: C.black,
+    borderRadius: 12,
+  },
+  storeGiftIcon: { backgroundColor: C.electricYellow },
+  storeFuelIcon: { backgroundColor: "#84FF26" },
+  storeRewardCopy: { flex: 1, minWidth: 0, paddingLeft: 4 },
+  storeRewardTitle: { fontSize: 14, lineHeight: 24, fontWeight: "800", letterSpacing: -0.4, color: C.black },
+  storeRewardDescription: { fontSize: 14, lineHeight: 24, fontWeight: "700", letterSpacing: -0.4, color: C.mutedFg },
 
   divisionPill: { flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: C.electricYellow, borderWidth: 2, borderColor: C.black, borderRadius: 16, paddingHorizontal: 10, paddingVertical: 6, ...SH2 },
   divisionPillText: { fontSize: 9, fontWeight: "900", textTransform: "uppercase", color: C.black },
@@ -7463,6 +8869,92 @@ const s = StyleSheet.create({
   promoCountdown: { fontSize: 9, fontWeight: "700", fontStyle: "italic", textTransform: "uppercase", color: C.mutedFg, textAlign: "center" },
   backToMapBtn: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 20, paddingVertical: 12, ...SH2 },
   backToMapText: { fontSize: 11, fontWeight: "900", textTransform: "uppercase", color: C.black },
+
+  profileFigmaScroll: { paddingHorizontal: 24 },
+  profileFigmaHeading: { alignItems: "flex-start" },
+  profileFigmaTitle: { fontSize: 20, lineHeight: 24, fontWeight: "900", letterSpacing: -1, textTransform: "uppercase", color: C.black },
+  profileFigmaSubtitle: { fontSize: 14, lineHeight: 24, fontWeight: "700", letterSpacing: -0.4, color: C.mutedFg },
+  profileFigmaHeroCard: { marginTop: 12, width: "100%", backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 20, padding: 16, gap: 10, ...SH4 },
+  profileFigmaIdentityRow: { flexDirection: "row", alignItems: "center", gap: 16 },
+  profileFigmaAvatarWrap: { width: 64, height: 64, ...SH2 },
+  profileFigmaAvatarClip: { width: 64, height: 64, borderRadius: 32, borderWidth: 2, borderColor: C.black, overflow: "hidden", backgroundColor: C.hotPink },
+  profileFigmaAvatarImg: { width: "100%", height: "100%" },
+  profileFigmaEditBadge: { position: "absolute", right: -2, bottom: -2, width: 24, height: 24, borderRadius: 12, backgroundColor: C.electricYellow, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  profileFigmaIdentityCopy: { flex: 1, minWidth: 0, gap: 8, alignItems: "flex-start" },
+  profileFigmaName: { width: "100%", fontSize: 14, lineHeight: 18, fontWeight: "800", letterSpacing: -0.25, textTransform: "uppercase", color: C.black },
+  profileFigmaChipRow: { flexDirection: "row", alignItems: "center", gap: 8, maxWidth: "100%" },
+  profileFigmaChip: { minHeight: 36, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 2, borderWidth: 2, borderColor: C.black, borderRadius: 100, paddingHorizontal: 8, paddingVertical: 4, ...SH2 },
+  profileFigmaRankChip: { backgroundColor: C.mint },
+  profileFigmaModeChip: { backgroundColor: "#B4FFFD", flexShrink: 1 },
+  profileFigmaChipText: { flexShrink: 1, fontSize: 12, lineHeight: 24, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  profileFigmaProgressBlock: { height: 48, gap: 4, paddingHorizontal: 4 },
+  profileFigmaProgressHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  profileFigmaProgressLabel: { flexDirection: "row", alignItems: "center", flexShrink: 1 },
+  profileFigmaMedal: { fontSize: 18, lineHeight: 24 },
+  profileFigmaProgressTitle: { fontSize: 12, lineHeight: 24, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  profileFigmaProgressValue: { flexShrink: 1, fontSize: 12, lineHeight: 24, fontWeight: "700", letterSpacing: -0.4, color: C.black, textAlign: "right", textTransform: "capitalize" },
+  profileFigmaProgressTrack: { width: "100%", height: 20, borderWidth: 2, borderColor: C.black, borderRadius: 10, backgroundColor: C.white, padding: 2, overflow: "hidden" },
+  profileFigmaProgressFill: { height: 12, borderRadius: 6, backgroundColor: C.mint, shadowColor: C.mint, shadowOffset: { width: 0, height: 0 }, shadowOpacity: 1, shadowRadius: 8 },
+  profileFigmaStatsGrid: { marginTop: 24, flexDirection: "row", flexWrap: "wrap", gap: 12 },
+  profileFigmaStatCard: { width: (SW - 60) / 2, height: 96, borderWidth: 2, borderColor: C.black, borderRadius: 20, padding: 16, justifyContent: "space-between", ...SH4 },
+  profileFigmaStatLabel: { fontSize: 12, lineHeight: 18, fontWeight: "900", textTransform: "uppercase" },
+  profileFigmaStatValue: { fontSize: 46, lineHeight: 48, fontWeight: "900", letterSpacing: -1.5, color: C.black },
+  profileFigmaShieldCard: { marginTop: 24, width: "100%", minHeight: 161, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 20, padding: 16, gap: 9, ...SH4 },
+  profileFigmaShieldHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between" },
+  profileFigmaSectionTitle: { fontSize: 14, lineHeight: 18, fontWeight: "800", letterSpacing: -0.25, textTransform: "uppercase", color: C.black },
+  profileFigmaEditButton: { width: 64, height: 32, alignItems: "center", justifyContent: "center", backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, borderRadius: 16, ...SH2 },
+  profileFigmaEditButtonText: { fontSize: 12, lineHeight: 24, fontWeight: "900", textTransform: "uppercase", color: C.white },
+  profileShieldStatusRow: { width: "100%", gap: 10, paddingVertical: 4 },
+  profileShieldStatusCopy: { flexDirection: "row", alignItems: "center", gap: 10 },
+  profileShieldStatusIcon: { width: 42, height: 42, borderRadius: 12, backgroundColor: C.mint, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center" },
+  profileShieldSelectionText: { fontSize: 13, lineHeight: 18, fontWeight: "900", color: C.black },
+  profileShieldPrivacyText: { marginTop: 2, fontSize: 10, lineHeight: 14, fontWeight: "700", color: C.mutedFg },
+  profileShieldStatusPill: { alignSelf: "flex-start", minHeight: 28, borderRadius: 14, borderWidth: 1.5, borderColor: C.black, paddingHorizontal: 10, alignItems: "center", justifyContent: "center" },
+  profileShieldStatusPillText: { fontSize: 10, lineHeight: 14, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  profileFigmaAppsRow: { flexDirection: "row", alignItems: "center", gap: 16 },
+  profileFigmaAppItem: { width: 79, alignItems: "center" },
+  profileFigmaAppCircle: { width: 64, height: 64, borderRadius: 32, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  profileFigmaAppLockBadge: { position: "absolute", right: -8, top: -4, width: 24, height: 24, borderRadius: 12, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  profileFigmaAppName: { width: "100%", fontSize: 14, lineHeight: 24, fontWeight: "700", letterSpacing: -0.4, color: C.black, textAlign: "center" },
+  profileFigmaEmptyApps: { height: 88, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
+  profileFigmaEmptyAppsText: { fontSize: 14, fontWeight: "800", textTransform: "uppercase", color: C.mutedFg },
+  profileShieldFuelPanel: { width: "100%", marginTop: 4, padding: 12, gap: 10, borderRadius: 14, borderWidth: 1.5, borderColor: C.black, backgroundColor: C.mintLight },
+  profileShieldFuelHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 },
+  profileShieldFuelTitle: { fontSize: 11, lineHeight: 16, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  profileShieldFuelBalance: { fontSize: 11, lineHeight: 16, fontWeight: "800", color: C.mutedFg },
+  profileShieldUnlockButtons: { flexDirection: "row", gap: 8 },
+  profileShieldUnlockButton: { flex: 1, height: 38, borderRadius: 19, borderWidth: 2, borderColor: C.black, backgroundColor: C.hotPink, alignItems: "center", justifyContent: "center", ...SH2 },
+  profileShieldUnlockButtonDisabled: { opacity: 0.4 },
+  profileShieldUnlockButtonText: { fontSize: 11, lineHeight: 16, fontWeight: "900", color: C.white },
+  profileShieldUnlockMessage: { fontSize: 11, lineHeight: 17, fontWeight: "800", color: C.black },
+  profileShieldToggleButton: { minHeight: 36, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
+  profileShieldToggleText: { fontSize: 11, lineHeight: 16, fontWeight: "900", textTransform: "uppercase", color: C.mutedFg },
+  profileFigmaQuickLinks: { marginTop: 24, gap: 12 },
+  profileFigmaQuickLinksList: { gap: 12 },
+  profileFigmaQuickLinkRow: { width: "100%", height: 80, flexDirection: "row", alignItems: "center", gap: 4, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 16, ...SH4 },
+  profileFigmaQuickLinkIcon: { width: 48, height: 48, borderRadius: 12, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center" },
+  profileFigmaQuickLinkText: { flex: 1, paddingLeft: 0, fontSize: 14, lineHeight: 18, fontWeight: "800", letterSpacing: -0.25, textTransform: "uppercase", color: C.black },
+  profileSignOutButton: { minHeight: 52, marginTop: 24, marginBottom: 8, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, borderWidth: 2, borderColor: C.hotPink, borderRadius: 16, backgroundColor: C.white },
+  profileSignOutButtonText: { fontSize: 14, lineHeight: 18, fontWeight: "900", textTransform: "uppercase", color: C.hotPink },
+  profileEditorModal: { flex: 1, padding: 24, backgroundColor: C.offWhite },
+  profileEditorHeader: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 16 },
+  profileEditorTitle: { fontSize: 20, lineHeight: 24, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  profileEditorSubtitle: { marginTop: 4, fontSize: 13, lineHeight: 18, fontWeight: "700", color: C.mutedFg },
+  profileEditorForm: { marginTop: 28, gap: 10 },
+  profileEditorLabel: { fontSize: 12, lineHeight: 16, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  profileEditorInput: { minHeight: 52, paddingHorizontal: 16, borderWidth: 2, borderColor: C.black, borderRadius: 14, backgroundColor: C.white, fontSize: 16, fontWeight: "700", color: C.black },
+  profileEditorGoalInput: { minHeight: 96, paddingTop: 14, textAlignVertical: "top" },
+  profileEditorSaveButton: { minHeight: 52, marginTop: 14, borderWidth: 2, borderColor: C.black, borderRadius: 16, backgroundColor: C.hotPink, alignItems: "center", justifyContent: "center", ...SH2 },
+  profileEditorSaveButtonDisabled: { opacity: 0.6 },
+  profileEditorSaveButtonText: { fontSize: 14, lineHeight: 18, fontWeight: "900", textTransform: "uppercase", color: C.white },
+  subscriptionGateScreen: { flex: 1, alignItems: "center", justifyContent: "center", paddingHorizontal: 28, backgroundColor: C.offWhite },
+  subscriptionGateIcon: { width: 82, height: 82, marginBottom: 22, borderWidth: 2, borderColor: C.black, borderRadius: 24, alignItems: "center", justifyContent: "center", backgroundColor: C.electricYellow, ...SH4 },
+  subscriptionGateTitle: { fontSize: 24, lineHeight: 28, fontWeight: "900", textAlign: "center", textTransform: "uppercase", color: C.black },
+  subscriptionGateBody: { maxWidth: 360, marginTop: 12, fontSize: 14, lineHeight: 21, fontWeight: "700", textAlign: "center", color: C.mutedFg },
+  subscriptionGatePrimary: { width: "100%", maxWidth: 360, minHeight: 54, marginTop: 28, borderWidth: 2, borderColor: C.black, borderRadius: 18, alignItems: "center", justifyContent: "center", backgroundColor: C.hotPink, ...SH4 },
+  subscriptionGatePrimaryText: { fontSize: 15, lineHeight: 20, fontWeight: "900", textTransform: "uppercase", color: C.white },
+  subscriptionGateSecondary: { minHeight: 48, marginTop: 8, paddingHorizontal: 20, alignItems: "center", justifyContent: "center" },
+  subscriptionGateSecondaryText: { fontSize: 13, lineHeight: 18, fontWeight: "900", textTransform: "uppercase", color: C.mutedFg },
 
   profileCard: { flexDirection: "row", alignItems: "center", gap: 20, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 20, padding: 24, ...SH4 },
   profileAvatarWrap: { width: 72, height: 72, borderRadius: 36, backgroundColor: C.hotPink, borderWidth: 4, borderColor: C.black, overflow: "hidden" },
@@ -7506,6 +8998,13 @@ const s = StyleSheet.create({
   blockedAppsTitle: { fontSize: 22, fontWeight: "900", textTransform: "uppercase", color: C.black, letterSpacing: -0.5 },
   blockedAppsClose: { width: 36, height: 36, borderRadius: 18, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
   blockedAppsSub: { fontSize: 12, fontWeight: "700", color: C.mutedFg, marginBottom: 20, lineHeight: 18 },
+  androidProfilePermissionCard: { marginBottom: 16, padding: 14, gap: 8, borderWidth: 2, borderColor: C.black, borderRadius: 16, backgroundColor: C.electricYellowLight, ...SH2 },
+  androidProfilePermissionTitle: { fontSize: 13, lineHeight: 18, fontWeight: "900", textTransform: "uppercase", color: C.black },
+  androidProfilePermissionBody: { fontSize: 11, lineHeight: 17, fontWeight: "700", color: C.mutedFg },
+  androidProfilePermissionButtons: { flexDirection: "row", gap: 8 },
+  androidProfilePermissionButton: { flex: 1, minHeight: 38, paddingHorizontal: 8, borderWidth: 2, borderColor: C.black, borderRadius: 19, backgroundColor: C.white, alignItems: "center", justifyContent: "center" },
+  androidProfilePermissionButtonDone: { backgroundColor: C.mint },
+  androidProfilePermissionButtonText: { fontSize: 10, lineHeight: 14, fontWeight: "900", textTransform: "uppercase", color: C.black, textAlign: "center" },
   blockedAppsList: { gap: 12, paddingBottom: 40 },
   blockedAppRow: {
     flexDirection: "row",

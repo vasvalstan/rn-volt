@@ -2,10 +2,18 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { auth } from "./auth";
 
+const LAZY_PASS_WEEKLY_CAP = 1;
 const LAZY_PASS_MONTHLY_CAP = 3;
 
 function utcMonthKey(d: Date): string {
   return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+}
+
+function utcWeekKey(d: Date): string {
+  const monday = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
+  const daysSinceMonday = (monday.getUTCDay() + 6) % 7;
+  monday.setUTCDate(monday.getUTCDate() - daysSinceMonday);
+  return `week:${monday.toISOString().slice(0, 10)}`;
 }
 
 export const getStreak = query({
@@ -52,7 +60,8 @@ export const useFreeze = mutation({
 });
 
 /**
- * Call when CustomerInfo updates. Weekly → 0 freezes; monthly/yearly → up to 3 per UTC calendar month.
+ * Call when CustomerInfo updates. Weekly refills 1 pass per UTC week;
+ * monthly/yearly refill up to 3 per UTC calendar month.
  */
 export const syncStreakFreezeAllowance = mutation({
   args: {
@@ -73,18 +82,19 @@ export const syncStreakFreezeAllowance = mutation({
 
     if (!profile) throw new Error("Profile not found");
 
-    if (args.billingPeriod === "weekly") {
-      await ctx.db.patch(profile._id, { freezesRemaining: 0 });
-      return;
-    }
-
-    const monthKey = utcMonthKey(new Date());
-    const needsRefill = profile.freezesMonthKey !== monthKey;
+    const now = new Date();
+    const periodKey =
+      args.billingPeriod === "weekly" ? utcWeekKey(now) : utcMonthKey(now);
+    const allowance =
+      args.billingPeriod === "weekly"
+        ? LAZY_PASS_WEEKLY_CAP
+        : LAZY_PASS_MONTHLY_CAP;
+    const needsRefill = profile.freezesMonthKey !== periodKey;
 
     if (needsRefill) {
       await ctx.db.patch(profile._id, {
-        freezesRemaining: LAZY_PASS_MONTHLY_CAP,
-        freezesMonthKey: monthKey,
+        freezesRemaining: allowance,
+        freezesMonthKey: periodKey,
       });
     }
   },
@@ -110,9 +120,16 @@ export const checkAndResetStreak = mutation({
     );
 
     if (diffDays > 1) {
-      await ctx.db.patch(profile._id, {
-        currentStreak: 0,
-      });
+      if ((profile.freezesRemaining ?? 0) > 0) {
+        const yesterday = new Date(today);
+        yesterday.setUTCDate(today.getUTCDate() - 1);
+        await ctx.db.patch(profile._id, {
+          freezesRemaining: Math.max(0, (profile.freezesRemaining ?? 0) - 1),
+          lastActivityDate: yesterday.toISOString().split("T")[0],
+        });
+      } else {
+        await ctx.db.patch(profile._id, { currentStreak: 0 });
+      }
     }
   },
 });

@@ -4,12 +4,6 @@ import { internal } from "./_generated/api";
 const crons = cronJobs();
 
 crons.weekly(
-  "weekly leaderboard snapshot",
-  { dayOfWeek: "sunday", hourUTC: 0, minuteUTC: 0 },
-  internal.cron_functions.snapshotWeeklyLeaderboard
-);
-
-crons.weekly(
   "weekly league promotions",
   { dayOfWeek: "sunday", hourUTC: 0, minuteUTC: 5 },
   internal.leaderboard.processWeeklyPromotions

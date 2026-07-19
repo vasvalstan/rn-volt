@@ -2,68 +2,8 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import { auth } from "./auth";
 import { bumpWeeklyFuelRollup } from "./fuelRollups";
-
-const COIN_REWARDS = {
-  dailyLogin: 5,
-  streak7: 25,
-  streak14: 50,
-  streak30: 100,
-} as const;
-
-function coinMultiplierFromBaseline(baseline: number | undefined): number {
-  return Math.max(0.5, (baseline ?? DEFAULT_BASELINE) / 60);
-}
-
-function scaledCoin(base: number, baseline: number | undefined): number {
-  return Math.max(1, Math.round(base * coinMultiplierFromBaseline(baseline)));
-}
-
-function coinRewardForStreak(streak: number, baseline: number | undefined): number {
-  let base = 0;
-  if (streak === 30) base = COIN_REWARDS.streak30;
-  else if (streak === 14) base = COIN_REWARDS.streak14;
-  else if (streak === 7) base = COIN_REWARDS.streak7;
-  return base > 0 ? scaledCoin(base, baseline) : 0;
-}
-
-function cutbackBountyCoins(baseline: number | undefined, reduction: number | undefined): number {
-  const pct = reduction ?? DEFAULT_REDUCTION;
-  if (pct >= 50) return scaledCoin(15, baseline);
-  if (pct >= 30) return scaledCoin(8, baseline);
-  return 0;
-}
-
-const ACTIVITY_COIN_BASE: Record<string, number> = {
-  physical: 3,
-  mindful: 2,
-  micro: 1,
-  "anti-scroll": 2,
-};
-
-const ACTIVITY_CATEGORY: Record<string, string> = {
-  run: "physical", pushups: "physical", squats: "physical",
-  jumpingjacks: "physical", plank: "physical", wallsit: "physical",
-  situps: "physical", stretch: "physical",
-  breathe: "mindful", gratitude: "mindful", focusdot: "mindful",
-  bodyscan: "mindful", mindfulwalk: "mindful",
-  water: "micro", kindact: "micro", planday: "micro",
-  phonebed: "micro", clean: "micro", instrument: "micro",
-  study: "micro", read: "micro", cookmeal: "micro",
-  eyesclosed: "anti-scroll", leaveroom: "anti-scroll", grayscale: "anti-scroll",
-};
-
-const EXPECTED_ACTIVITIES_PER_DAY = 4;
-const DEFAULT_BASELINE = 60;
-const DEFAULT_REDUCTION = 20;
-
-function computeDailyFuelBudget(
-  baseline: number | undefined,
-  reduction: number | undefined,
-): number {
-  const b = baseline ?? DEFAULT_BASELINE;
-  const r = reduction ?? DEFAULT_REDUCTION;
-  return Math.round(b * (1 - r / 100));
-}
+import { ACTIVITY_RULES, computeActivityReward, dailyFuelBudget } from "../shared/gamification";
+import { addWeeklyScore } from "./leaderboardUtils";
 
 const RANK_THRESHOLDS: Record<string, number> = {
   starter: 0,
@@ -74,6 +14,20 @@ const RANK_THRESHOLDS: Record<string, number> = {
 };
 
 const RANK_ORDER = ["starter", "disciplined", "warrior", "elite", "legend"];
+const DAY_MS = 86_400_000;
+const MAX_REWARD_BASELINE_MINUTES = 180;
+
+type ActivityMetadata = {
+  distance?: number;
+  reps?: number;
+  duration?: number;
+  note?: string;
+  transcript?: string;
+  summary?: string;
+  voiceUri?: string;
+  coachSessionId?: string;
+  geminiSessionId?: string;
+};
 
 function computeRank(totalDp: number): string {
   let rank = "starter";
@@ -81,6 +35,85 @@ function computeRank(totalDp: number): string {
     if (totalDp >= RANK_THRESHOLDS[r]) rank = r;
   }
   return rank;
+}
+
+function utcDayKey(now = new Date()): string {
+  return now.toISOString().slice(0, 10);
+}
+
+function utcDayStart(dayKey: string): number {
+  return Date.parse(`${dayKey}T00:00:00.000Z`);
+}
+
+function dayGap(previousDay: string | undefined, currentDay: string): number | null {
+  if (!previousDay) return null;
+  const previous = utcDayStart(previousDay);
+  const current = utcDayStart(currentDay);
+  if (!Number.isFinite(previous) || !Number.isFinite(current)) return null;
+  return Math.round((current - previous) / DAY_MS);
+}
+
+function rewardBaselineMultiplier(baseline: number): number {
+  const bounded = Math.min(
+    MAX_REWARD_BASELINE_MINUTES,
+    Math.max(1, Number.isFinite(baseline) ? baseline : 60),
+  );
+  return Math.max(0.5, bounded / 60);
+}
+
+function assertOptionalFiniteRange(
+  label: string,
+  value: number | undefined,
+  min: number,
+  max: number,
+): void {
+  if (value !== undefined && (!Number.isFinite(value) || value < min || value > max)) {
+    throw new Error(`${label} must be between ${min} and ${max}`);
+  }
+}
+
+function assertOptionalText(
+  label: string,
+  value: string | undefined,
+  maxLength: number,
+): void {
+  if (value !== undefined && value.length > maxLength) {
+    throw new Error(`${label} is too long`);
+  }
+}
+
+function validateActivityMetadata(type: string, metadata: ActivityMetadata | undefined): void {
+  if (!metadata) {
+    if (type === "run" || type === "coin_run") {
+      throw new Error("GPS activities require distance metadata");
+    }
+    return;
+  }
+
+  assertOptionalFiniteRange("Distance", metadata.distance, 0, 100_000);
+  assertOptionalFiniteRange("Reps", metadata.reps, 0, 10_000);
+  assertOptionalFiniteRange("Duration", metadata.duration, 0, 86_400);
+  assertOptionalText("Note", metadata.note, 4_000);
+  assertOptionalText("Transcript", metadata.transcript, 20_000);
+  assertOptionalText("Summary", metadata.summary, 4_000);
+  assertOptionalText("Voice URI", metadata.voiceUri, 2_048);
+  assertOptionalText("Coach session ID", metadata.coachSessionId, 200);
+  assertOptionalText("Session ID", metadata.geminiSessionId, 200);
+
+  if (type === "run" && (metadata.distance ?? 0) < 100) {
+    throw new Error("Walk or run at least 100 metres before completing");
+  }
+  if (type === "coin_run" && (metadata.distance ?? 0) < 250) {
+    throw new Error("Reach the first 250 metre checkpoint before completing");
+  }
+  if (
+    (type === "run" || type === "coin_run") &&
+    metadata.duration !== undefined &&
+    metadata.duration > 0 &&
+    (metadata.distance ?? 0) / metadata.duration > 12
+  ) {
+    throw new Error("GPS activity speed is outside the supported range");
+  }
 }
 
 export const getRecentActivities = query({
@@ -102,68 +135,60 @@ export const getTodayDp = query({
     const userId = await auth.getUserId(ctx);
     if (!userId) return 0;
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const startOfDay = today.getTime();
+    const startOfDay = utcDayStart(utcDayKey());
 
     const activities = await ctx.db
       .query("activities")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .withIndex("by_userId", (q) =>
+        q.eq("userId", userId).gte("_creationTime", startOfDay),
+      )
       .collect();
 
-    return activities
-      .filter((a) => a._creationTime >= startOfDay)
-      .reduce((sum, a) => sum + a.dpEarned, 0);
+    return activities.reduce((sum, a) => sum + a.dpEarned, 0);
   },
 });
-
-const DAILY_LIMITS: Record<string, number> = {
-  breathe: 2,
-  gratitude: 1,
-  water: 4,
-  kindact: 2,
-  eyesclosed: 3,
-  planday: 1,
-  bodyscan: 2,
-  mindfulwalk: 2,
-  phonebed: 1,
-  clean: 2,
-  instrument: 2,
-  study: 2,
-  read: 2,
-  cookmeal: 1,
-  grayscale: 1,
-};
 
 export const logActivity = mutation({
   args: {
     type: v.string(),
-    dpEarned: v.number(),
-    minutesEarned: v.number(),
+    // Keep the former client-supplied reward fields optional so already-installed
+    // builds remain compatible. Rewards and verification are still derived here.
+    dpEarned: v.optional(v.number()),
+    minutesEarned: v.optional(v.number()),
+    verificationMethod: v.optional(v.string()),
     metadata: v.optional(
       v.object({
         distance: v.optional(v.number()),
         reps: v.optional(v.number()),
         duration: v.optional(v.number()),
+        note: v.optional(v.string()),
+        transcript: v.optional(v.string()),
+        summary: v.optional(v.string()),
+        voiceUri: v.optional(v.string()),
+        coachSessionId: v.optional(v.string()),
+        geminiSessionId: v.optional(v.string()),
       })
     ),
-    verificationMethod: v.string(),
   },
   handler: async (ctx, args) => {
     const userId = await auth.getUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const startOfDay = today.getTime();
+    const rule = ACTIVITY_RULES[args.type];
+    if (!rule) throw new Error("Unknown activity");
+    validateActivityMetadata(args.type, args.metadata);
+
+    const todayStr = utcDayKey();
+    const startOfDay = utcDayStart(todayStr);
 
     const todayActivities = await ctx.db
       .query("activities")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect()
-      .then((all) => all.filter((a) => a._creationTime >= startOfDay));
+      .withIndex("by_userId", (q) =>
+        q.eq("userId", userId).gte("_creationTime", startOfDay),
+      )
+      .collect();
 
-    const limit = DAILY_LIMITS[args.type];
+    const limit = rule.dailyLimit;
     if (limit !== undefined) {
       const count = todayActivities.filter((a) => a.type === args.type).length;
       if (count >= limit) {
@@ -176,72 +201,154 @@ export const logActivity = mutation({
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .unique();
 
-    if (profile) {
-      const dailyCap = computeDailyFuelBudget(
-        profile.baselineToxicMinutesPerDay,
-        profile.scrollReductionGoalPercent,
-      );
-      const todayMinutes = todayActivities.reduce(
-        (sum, a) => sum + a.minutesEarned,
-        0,
-      );
-      if (todayMinutes + args.minutesEarned > dailyCap) {
-        throw new Error(
-          `Daily fuel cap reached (${dailyCap} min). Come back tomorrow!`,
-        );
-      }
+    if (!profile) throw new Error("Profile not found");
+
+    const difficulty = profile.difficultyLevel === "beast"
+      ? "beast"
+      : profile.difficultyLevel === "chill"
+        ? "chill"
+        : "balanced";
+    const economyProfile = {
+      baselineToxicMinutesPerDay: profile.baselineToxicMinutesPerDay ?? 60,
+      scrollReductionGoalPercent: profile.scrollReductionGoalPercent ?? 20,
+      difficulty,
+    } as const;
+    const reward = computeActivityReward(economyProfile, args.type, {
+      distance: args.metadata?.distance,
+    });
+    const dailyCap = dailyFuelBudget(economyProfile);
+    const todayMinutes = todayActivities.reduce(
+      (sum, activity) => sum + activity.minutesEarned,
+      0,
+    );
+    if (todayMinutes + reward.minutes > dailyCap) {
+      throw new Error(`Daily fuel cap reached (${dailyCap} min). Come back tomorrow!`);
     }
 
     await ctx.db.insert("activities", {
       userId,
       type: args.type,
-      dpEarned: args.dpEarned,
-      minutesEarned: args.minutesEarned,
+      dpEarned: reward.vp,
+      minutesEarned: reward.minutes,
       metadata: args.metadata,
-      verificationMethod: args.verificationMethod,
-      verified: true,
+      verificationMethod: rule.verification,
+      // Measurement currently originates on the client. Keep the record honest
+      // until completion is backed by a server-issued session/attestation flow.
+      verified: false,
     });
 
-    if (profile) {
-      const newTotalDp = profile.totalDp + args.dpEarned;
-      const newMinutes = profile.minutesAvailable + args.minutesEarned;
-      const todayStr = new Date().toISOString().split("T")[0];
-      const isNewDay = profile.lastActivityDate !== todayStr;
-      const newStreak = isNewDay ? profile.currentStreak + 1 : profile.currentStreak;
-      const newBestStreak = Math.max(newStreak, profile.bestStreak);
-
-      const nextLifeEarned =
-        (profile.lifetimeMinutesEarned ?? 0) + args.minutesEarned;
-
-      let coinBonus = 0;
-      const actCat = ACTIVITY_CATEGORY[args.type];
-      const actCoinBase = actCat ? (ACTIVITY_COIN_BASE[actCat] ?? 1) : 1;
-      coinBonus += scaledCoin(actCoinBase, profile.baselineToxicMinutesPerDay);
-      if (isNewDay) {
-        coinBonus += scaledCoin(COIN_REWARDS.dailyLogin, profile.baselineToxicMinutesPerDay);
-        coinBonus += coinRewardForStreak(newStreak, profile.baselineToxicMinutesPerDay);
-        coinBonus += cutbackBountyCoins(
-          profile.baselineToxicMinutesPerDay,
-          profile.scrollReductionGoalPercent,
+    let nodeDp = 0;
+    let nodeCoins = 0;
+    let completedNodeLabel: string | undefined;
+    const mapNodes = await ctx.db
+      .query("mapProgress")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .collect();
+    const currentNode = mapNodes.find((node) => node.status === "current");
+    const requiredKeys = currentNode?.activityKeys ?? [];
+    if (currentNode && requiredKeys.includes(args.type)) {
+      const completedKeys = Array.from(new Set([
+        ...(currentNode.completedActivityKeys ?? []),
+        args.type,
+      ]));
+      const nodeComplete = requiredKeys.every((key) => completedKeys.includes(key));
+      await ctx.db.patch(currentNode._id, {
+        completedActivityKeys: completedKeys,
+        ...(nodeComplete ? { status: "completed", completedAt: Date.now() } : {}),
+      });
+      if (nodeComplete) {
+        nodeDp = currentNode.dp ?? 0;
+        completedNodeLabel = currentNode.label;
+        const baselineMult = rewardBaselineMultiplier(
+          economyProfile.baselineToxicMinutesPerDay,
         );
+        nodeCoins = currentNode.nodeType === "boss" ? Math.round(25 * baselineMult) : 0;
+        const nextNode = mapNodes.find((node) => node.nodeId === currentNode.nodeId + 1);
+        if (nextNode) await ctx.db.patch(nextNode._id, { status: "current" });
       }
-
-      await ctx.db.patch(profile._id, {
-        totalDp: newTotalDp,
-        minutesAvailable: newMinutes,
-        currentStreak: newStreak,
-        bestStreak: newBestStreak,
-        lastActivityDate: todayStr,
-        rank: computeRank(newTotalDp),
-        lifetimeMinutesEarned: nextLifeEarned,
-        coinBalance: (profile.coinBalance ?? 0) + coinBonus,
-      });
-
-      await bumpWeeklyFuelRollup(ctx, userId, {
-        minutesEarned: args.minutesEarned,
-        dpEarned: args.dpEarned,
-      });
     }
+
+    const missionCount = todayActivities.filter((activity) => activity.type !== "coin_run").length + (args.type === "coin_run" ? 0 : 1);
+    const dailyQuestCompleted = missionCount >= 3 && profile.lastDailyQuestClaimDate !== todayStr;
+    const dailyQuestCoins = dailyQuestCompleted ? 10 : 0;
+    const gap = dayGap(profile.lastActivityDate, todayStr);
+    const isNewDay = gap === null || gap > 0;
+    const missedDays = gap !== null && gap > 1 ? gap - 1 : 0;
+    const canBridgeMissedDays =
+      missedDays > 0 && missedDays <= (profile.freezesRemaining ?? 0);
+    const newStreak = !isNewDay
+      ? profile.currentStreak
+      : gap === 1 || canBridgeMissedDays
+        ? profile.currentStreak + 1
+        : 1;
+    const newFreezesRemaining = canBridgeMissedDays
+      ? Math.max(0, (profile.freezesRemaining ?? 0) - missedDays)
+      : profile.freezesRemaining;
+    const streakBase = isNewDay && newStreak === 7 ? 25 : isNewDay && newStreak === 14 ? 50 : isNewDay && newStreak === 30 ? 100 : 0;
+    const streakCoins = Math.round(
+      streakBase * rewardBaselineMultiplier(economyProfile.baselineToxicMinutesPerDay),
+    );
+    const totalDpEarned = reward.vp + nodeDp;
+    const totalCoinsEarned = reward.coins + nodeCoins + dailyQuestCoins + streakCoins;
+    const newTotalDp = profile.totalDp + totalDpEarned;
+
+    await ctx.db.patch(profile._id, {
+      totalDp: newTotalDp,
+      minutesAvailable: profile.minutesAvailable + reward.minutes,
+      currentStreak: newStreak,
+      bestStreak: Math.max(newStreak, profile.bestStreak),
+      freezesRemaining: newFreezesRemaining,
+      lastActivityDate: todayStr,
+      rank: computeRank(newTotalDp),
+      lifetimeMinutesEarned: (profile.lifetimeMinutesEarned ?? 0) + reward.minutes,
+      coinBalance: (profile.coinBalance ?? 0) + totalCoinsEarned,
+      ...(dailyQuestCompleted ? { lastDailyQuestClaimDate: todayStr } : {}),
+    });
+
+    await bumpWeeklyFuelRollup(ctx, userId, {
+      minutesEarned: reward.minutes,
+      dpEarned: totalDpEarned,
+    });
+    await addWeeklyScore(ctx, userId, totalDpEarned, profile.league ?? "bronze");
+
+    return {
+      minutesEarned: reward.minutes,
+      vpEarned: reward.vp,
+      coinsEarned: totalCoinsEarned,
+      missionCount: Math.min(3, missionCount),
+      dailyQuestCompleted,
+      completedNodeLabel,
+      nodeDp,
+    };
+  },
+});
+
+export const getTodaySummary = query({
+  args: {},
+  handler: async (ctx) => {
+    const userId = await auth.getUserId(ctx);
+    if (!userId) return null;
+    const profile = await ctx.db
+      .query("profiles")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .unique();
+    if (!profile) return null;
+    const todayStr = utcDayKey();
+    const startOfDay = utcDayStart(todayStr);
+    const activities = await ctx.db
+      .query("activities")
+      .withIndex("by_userId", (q) =>
+        q.eq("userId", userId).gte("_creationTime", startOfDay),
+      )
+      .collect();
+    const missionCount = activities.filter((activity) => activity.type !== "coin_run").length;
+    return {
+      missionCount: Math.min(3, missionCount),
+      missionGoal: 3,
+      questClaimed: profile.lastDailyQuestClaimDate === todayStr,
+      minutesEarned: activities.reduce((sum, activity) => sum + activity.minutesEarned, 0),
+      recentTypes: activities.slice(-5).map((activity) => activity.type),
+    };
   },
 });
 
@@ -251,44 +358,37 @@ export const getTodayCounts = query({
     const userId = await auth.getUserId(ctx);
     if (!userId) return {};
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const startOfDay = today.getTime();
+    const startOfDay = utcDayStart(utcDayKey());
 
     const activities = await ctx.db
       .query("activities")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .withIndex("by_userId", (q) =>
+        q.eq("userId", userId).gte("_creationTime", startOfDay),
+      )
       .collect();
 
     const counts: Record<string, number> = {};
     for (const a of activities) {
-      if (a._creationTime >= startOfDay) {
-        counts[a.type] = (counts[a.type] ?? 0) + 1;
-      }
+      counts[a.type] = (counts[a.type] ?? 0) + 1;
     }
     return counts;
   },
 });
 
+/**
+ * @deprecated Kept as an authenticated no-op for installed clients that still
+ * call this after logging a Coin Run. logActivity now awards coins server-side,
+ * so crediting here would double-pay and would restore a client-trust exploit.
+ */
 export const creditCoins = mutation({
   args: {
     amount: v.number(),
     source: v.string(),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const userId = await auth.getUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
-    if (args.amount <= 0) return;
-
-    const profile = await ctx.db
-      .query("profiles")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .unique();
-    if (!profile) throw new Error("Profile not found");
-
-    await ctx.db.patch(profile._id, {
-      coinBalance: (profile.coinBalance ?? 0) + args.amount,
-    });
+    return { credited: false, handledBy: "logActivity" };
   },
 });
 
@@ -306,6 +406,14 @@ export const claimFuel = mutation({
       .unique();
 
     if (!profile) throw new Error("Profile not found");
+    if (
+      !Number.isFinite(args.minutes) ||
+      !Number.isInteger(args.minutes) ||
+      args.minutes <= 0 ||
+      args.minutes > 1_440
+    ) {
+      throw new Error("Minutes must be an integer between 1 and 1440");
+    }
     if (profile.minutesAvailable < args.minutes)
       throw new Error("Not enough minutes");
 

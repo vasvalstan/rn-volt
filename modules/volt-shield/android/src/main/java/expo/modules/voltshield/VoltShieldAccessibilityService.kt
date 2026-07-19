@@ -53,8 +53,17 @@ class VoltShieldAccessibilityService : AccessibilityService() {
     if (packageName == "com.android.settings") return false
     if (packageName.contains("launcher", ignoreCase = true)) return false
 
+    val preferences = prefs(this)
+    if (!preferences.getBoolean(SHIELD_ENABLED_KEY, true)) return false
+
+    val unlockUntil = preferences.getLong(SHIELD_UNLOCK_UNTIL_KEY, 0L)
+    if (unlockUntil > System.currentTimeMillis()) return false
+    if (unlockUntil > 0L) {
+      preferences.edit().putLong(SHIELD_UNLOCK_UNTIL_KEY, 0L).apply()
+    }
+
     val blockedPackages =
-      prefs(this).getStringSet(BLOCKED_PACKAGES_KEY, emptySet<String>()) ?: emptySet<String>()
+      preferences.getStringSet(BLOCKED_PACKAGES_KEY, emptySet<String>()) ?: emptySet<String>()
     return blockedPackages.contains(packageName)
   }
 

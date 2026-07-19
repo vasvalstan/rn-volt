@@ -1,7 +1,15 @@
-import { MaterialIcons } from "@expo/vector-icons";
-import { Worklets } from "react-native-worklets-core";
+import { MaterialIcons } from "@react-native-vector-icons/material-icons";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Alert,
+  AppState,
+  BackHandler,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Circle, Line } from "react-native-svg";
 import {
@@ -15,13 +23,28 @@ import {
   type RepCounterState,
   type HoldState,
 } from "../lib/pose/repCounter";
+import { coachCueForExercise } from "../lib/coachCues";
+import {
+  startRealtimeCoachSession,
+  type RealtimeCoachSessionHandle,
+  type RealtimeCreateCallResult,
+  type RealtimeUsage,
+  type RealtimeVoiceEndReason,
+  type RealtimeVoiceStatus,
+} from "../lib/openaiRealtimeWebrtc";
 
 /* eslint-disable @typescript-eslint/no-require-imports */
 let VisionCamera: typeof import("react-native-vision-camera") | null = null;
+let Worklets: typeof import("react-native-worklets-core").Worklets | null = null;
 try {
   VisionCamera = require("react-native-vision-camera");
 } catch {
   VisionCamera = null;
+}
+try {
+  Worklets = require("react-native-worklets-core").Worklets;
+} catch {
+  Worklets = null;
 }
 
 const CameraView = VisionCamera?.Camera ?? null;
@@ -57,7 +80,7 @@ type PoseDetectionResultLike = {
   frameWidth?: number;
   frameHeight?: number;
   isMirrored?: boolean;
-  orientation?: number;
+  orientation?: number | string;
 };
 
 type DetectPoseLandmarksFn = (frame: unknown) => PoseDetectionResultLike | null;
@@ -75,6 +98,18 @@ type ExerciseCameraSessionProps = {
   readonly exerciseLabel: string;
   readonly targetReps?: number;
   readonly targetDurationSec?: number;
+  readonly onCreateRealtimeCall: (args: {
+    offerSdp: string;
+  }) => Promise<RealtimeCreateCallResult>;
+  readonly onEndRealtimeCall: (args: {
+    sessionId: RealtimeCreateCallResult["sessionId"];
+    reason: RealtimeVoiceEndReason;
+  }) => Promise<unknown>;
+  readonly onRecordRealtimeUsage: (args: {
+    sessionId: RealtimeCreateCallResult["sessionId"];
+    responseId: string;
+    usage: RealtimeUsage;
+  }) => Promise<unknown>;
   readonly onCancel: () => void;
   readonly onComplete: (completedReps: number) => void;
 };
@@ -129,11 +164,32 @@ function formatSecs(ms: number): string {
   return m > 0 ? `${m}:${s.toString().padStart(2, "0")}` : `${s}s`;
 }
 
-export default function ExerciseCameraSession({
+function formatCountdown(ms: number): string {
+  const totalSec = Math.max(0, Math.ceil(ms / 1000));
+  const minutes = Math.floor(totalSec / 60);
+  const seconds = totalSec % 60;
+  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
+}
+
+export default function ExerciseCameraSession(
+  props: ExerciseCameraSessionProps,
+) {
+  return (
+    <ExerciseCameraSessionContent
+      key={props.exerciseKey}
+      {...props}
+    />
+  );
+}
+
+function ExerciseCameraSessionContent({
   exerciseKey,
   exerciseLabel,
   targetReps = 10,
   targetDurationSec = 20,
+  onCreateRealtimeCall,
+  onEndRealtimeCall,
+  onRecordRealtimeUsage,
   onCancel,
   onComplete,
 }: ExerciseCameraSessionProps) {
@@ -153,28 +209,61 @@ export default function ExerciseCameraSession({
 
   // Shared state
   const [latestPose, setLatestPose] = useState<PoseLandmark[] | null>(null);
-  const [poseDetectedAtMs, setPoseDetectedAtMs] = useState<number | null>(null);
+  const [hasRecentPose, setHasRecentPose] = useState(false);
   const [frameSize, setFrameSize] = useState<Size | null>(null);
-  const [frameOrientation, setFrameOrientation] = useState<number | null>(null);
+  const [frameOrientation, setFrameOrientation] = useState<number | string | null>(null);
   const [previewSize, setPreviewSize] = useState<Size | null>(null);
   const [debugAngle, setDebugAngle] = useState<number | null>(null);
   const [debugQuality, setDebugQuality] = useState(false);
   const [debugSecondaryAngle, setDebugSecondaryAngle] = useState<number | null>(null);
   const device = useCameraDeviceCompat("front");
   const { hasPermission, requestPermission } = useCameraPermissionCompat();
+  const hasRecentPoseRef = useRef(false);
+  const poseStaleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const realtimeSessionRef = useRef<RealtimeCoachSessionHandle | null>(null);
+  const realtimeCreateCallRef = useRef(onCreateRealtimeCall);
+  const realtimeEndCallRef = useRef(onEndRealtimeCall);
+  const realtimeUsageRef = useRef(onRecordRealtimeUsage);
+  const realtimeConnectSeqRef = useRef(0);
+  const realtimeConnectingRef = useRef(false);
+  const realtimeMountedRef = useRef(true);
+  const lastMovementEventKeyRef = useRef("");
+  const [realtimeStatus, setRealtimeStatus] = useState<RealtimeVoiceStatus>("idle");
+  const [realtimeConnected, setRealtimeConnected] = useState(false);
+  const [realtimeExpiresAt, setRealtimeExpiresAt] = useState<number | null>(null);
+  const [clockNow, setClockNow] = useState(() => Date.now());
+  const [voiceCoachText, setVoiceCoachText] = useState("");
+  const [voiceError, setVoiceError] = useState("");
+  const [appState, setAppState] = useState(() => AppState.currentState);
+  const [cancelPending, setCancelPending] = useState(false);
+  const cancelPendingRef = useRef(false);
 
   useEffect(() => {
-    setCounterState(createInitialRepState(exerciseKey));
-    setHoldState(createInitialHoldState(exerciseKey));
-    holdCompletedRef.current = false;
-    setLatestPose(null);
-    setPoseDetectedAtMs(null);
-    setFrameSize(null);
-    setFrameOrientation(null);
-    setDebugAngle(null);
-    setDebugSecondaryAngle(null);
-    setDebugQuality(false);
-  }, [exerciseKey]);
+    realtimeCreateCallRef.current = onCreateRealtimeCall;
+    realtimeEndCallRef.current = onEndRealtimeCall;
+    realtimeUsageRef.current = onRecordRealtimeUsage;
+  }, [onCreateRealtimeCall, onEndRealtimeCall, onRecordRealtimeUsage]);
+
+  useEffect(() => {
+    if (!realtimeExpiresAt || !realtimeConnected) return;
+    const timer = setInterval(() => setClockNow(Date.now()), 1_000);
+    return () => clearInterval(timer);
+  }, [realtimeConnected, realtimeExpiresAt]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener("change", setAppState);
+    return () => subscription.remove();
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (poseStaleTimeoutRef.current) {
+        clearTimeout(poseStaleTimeoutRef.current);
+        poseStaleTimeoutRef.current = null;
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!CameraView || hasPermission) return;
@@ -188,6 +277,125 @@ export default function ExerciseCameraSession({
     return "camera-ready";
   }, [hasPermission, device]);
 
+  const stopRealtime = useCallback(async (reason: RealtimeVoiceEndReason = "user") => {
+    realtimeConnectSeqRef.current += 1;
+    realtimeConnectingRef.current = false;
+    const session = realtimeSessionRef.current;
+    realtimeSessionRef.current = null;
+    if (realtimeMountedRef.current) {
+      setRealtimeConnected(false);
+      setRealtimeExpiresAt(null);
+      setRealtimeStatus("idle");
+    }
+    await session?.stop(reason);
+  }, []);
+
+  const startRealtime = useCallback(async () => {
+    if (realtimeSessionRef.current || realtimeConnectingRef.current) return;
+
+    const connectSeq = realtimeConnectSeqRef.current + 1;
+    realtimeConnectSeqRef.current = connectSeq;
+    realtimeConnectingRef.current = true;
+    setVoiceError("");
+    setRealtimeStatus("connecting");
+
+    const openingPrompt =
+      mode === "reps"
+        ? `Let's do ${targetReps} ${exerciseLabel}. Get your full body in frame and start when ready.`
+        : `Let's hold ${exerciseLabel} for ${targetDurationSec} seconds. Get into position and I will coach you.`;
+
+    try {
+      const session = await startRealtimeCoachSession({
+        openingPrompt,
+        createCall: ({ offerSdp }) => realtimeCreateCallRef.current({ offerSdp }),
+        endCall: (args) => realtimeEndCallRef.current(args),
+        recordUsage: (args) => realtimeUsageRef.current(args),
+        onStatus: (status) => {
+          if (!realtimeMountedRef.current || realtimeConnectSeqRef.current !== connectSeq) return;
+          setRealtimeStatus(status);
+          if (status === "closed" || status === "error") {
+            setRealtimeConnected(false);
+          }
+        },
+        onUserTranscript: () => {},
+        onAssistantTranscript: (text) => {
+          if (!realtimeMountedRef.current || realtimeConnectSeqRef.current !== connectSeq) return;
+          setVoiceCoachText(text);
+        },
+        onEnded: (reason) => {
+          if (!realtimeMountedRef.current || realtimeConnectSeqRef.current !== connectSeq) return;
+          realtimeConnectSeqRef.current += 1;
+          realtimeConnectingRef.current = false;
+          realtimeSessionRef.current = null;
+          setRealtimeConnected(false);
+          setRealtimeExpiresAt(null);
+          setRealtimeStatus("idle");
+          if (reason === "client_idle") {
+            setVoiceError("Voice disconnected after 60 seconds without conversation.");
+          } else if (reason === "client_limit") {
+            setVoiceError("This live voice session reached its 5-minute limit.");
+          }
+        },
+        onError: (error) => {
+          if (!realtimeMountedRef.current || realtimeConnectSeqRef.current !== connectSeq) return;
+          setVoiceError(error.message);
+          setRealtimeStatus("error");
+          setRealtimeConnected(false);
+        },
+      });
+
+      if (!realtimeMountedRef.current || realtimeConnectSeqRef.current !== connectSeq) {
+        await session.stop("user");
+        return;
+      }
+      realtimeSessionRef.current = session;
+      setClockNow(Date.now());
+      setRealtimeExpiresAt(session.expiresAt);
+      setRealtimeConnected(true);
+    } catch (error) {
+      if (!realtimeMountedRef.current || realtimeConnectSeqRef.current !== connectSeq) return;
+      setVoiceError(error instanceof Error ? error.message : "Realtime exercise coaching failed.");
+      setRealtimeStatus("error");
+      setRealtimeConnected(false);
+    } finally {
+      if (realtimeConnectSeqRef.current === connectSeq) {
+        realtimeConnectingRef.current = false;
+      }
+    }
+  }, [exerciseLabel, mode, targetDurationSec, targetReps]);
+
+  useEffect(() => {
+    realtimeMountedRef.current = true;
+    let startTimer: ReturnType<typeof setTimeout> | undefined;
+    if (hasPermission || !CameraView) {
+      startTimer = setTimeout(() => {
+        void startRealtime();
+      }, 0);
+    }
+    return () => {
+      if (startTimer) clearTimeout(startTimer);
+      realtimeMountedRef.current = false;
+      realtimeConnectSeqRef.current += 1;
+      realtimeConnectingRef.current = false;
+      const session = realtimeSessionRef.current;
+      realtimeSessionRef.current = null;
+      void session?.stop("user");
+    };
+  }, [hasPermission, startRealtime]);
+
+  const toggleRealtime = useCallback(() => {
+    if (realtimeStatus === "connecting") {
+      void stopRealtime();
+      return;
+    }
+    if (realtimeConnected && realtimeStatus !== "error") {
+      void stopRealtime();
+      return;
+    }
+    void stopRealtime();
+    void startRealtime();
+  }, [realtimeConnected, realtimeStatus, startRealtime, stopRealtime]);
+
   const onPoseDetected = useCallback(
     (result: PoseDetectionResultLike) => {
       const firstPose = result.landmarks?.[0];
@@ -195,12 +403,29 @@ export default function ExerciseCameraSession({
 
       setLatestPose((prev) => smoothLandmarks(firstPose, prev));
       if (result.frameWidth && result.frameHeight) {
-        setFrameSize({ width: result.frameWidth, height: result.frameHeight });
+        setFrameSize((previous) =>
+          previous?.width === result.frameWidth && previous?.height === result.frameHeight
+            ? previous
+            : { width: result.frameWidth!, height: result.frameHeight! },
+        );
       }
-      if (typeof result.orientation === "number") {
-        setFrameOrientation(result.orientation);
+      if (typeof result.orientation === "number" || typeof result.orientation === "string") {
+        setFrameOrientation((previous) =>
+          previous === result.orientation ? previous : result.orientation!,
+        );
       }
-      setPoseDetectedAtMs(Date.now());
+      if (!hasRecentPoseRef.current) {
+        hasRecentPoseRef.current = true;
+        setHasRecentPose(true);
+      }
+      if (poseStaleTimeoutRef.current) {
+        clearTimeout(poseStaleTimeoutRef.current);
+      }
+      poseStaleTimeoutRef.current = setTimeout(() => {
+        poseStaleTimeoutRef.current = null;
+        hasRecentPoseRef.current = false;
+        setHasRecentPose(false);
+      }, 1400);
 
       const now = Date.now();
 
@@ -226,13 +451,15 @@ export default function ExerciseCameraSession({
   );
 
   const onPoseDetectedRunOnJS = useMemo(
-    () => Worklets.createRunOnJS(onPoseDetected),
+    // The worklet bridge stores this callback; it does not invoke/read its refs during render.
+    // eslint-disable-next-line react-hooks/refs
+    () => Worklets?.createRunOnJS(onPoseDetected),
     [onPoseDetected]
   );
   const frameProcessor = useFrameProcessorCompat(
     (frame) => {
       "worklet";
-      if (!detectPoseLandmarksWorklet) return;
+      if (!detectPoseLandmarksWorklet || !onPoseDetectedRunOnJS) return;
       runAtTargetFpsCompat(15, () => {
         "worklet";
         const result = detectPoseLandmarksWorklet(frame);
@@ -245,9 +472,9 @@ export default function ExerciseCameraSession({
 
   // Derived values
   const isAutoCountingEnabled =
-    runtimeState === "camera-ready" && typeof detectPoseLandmarksWorklet === "function";
-  const hasRecentPose =
-    poseDetectedAtMs !== null && Date.now() - poseDetectedAtMs < 1400;
+    runtimeState === "camera-ready" &&
+    typeof detectPoseLandmarksWorklet === "function" &&
+    typeof onPoseDetectedRunOnJS === "function";
 
   // Rep mode derived
   const repCount = counterState.repCount;
@@ -266,6 +493,82 @@ export default function ExerciseCameraSession({
   }, [holdDone]);
 
   const isDone = mode === "reps" ? repsDone : holdDone;
+  const localCoachCue = coachCueForExercise({
+    exerciseLabel,
+    mode,
+    repCount,
+    targetReps,
+    holdSec,
+    targetDurationSec,
+    hasRecentPose,
+    qualityOk: debugQuality,
+    inPosition: holdState.inPosition,
+  });
+
+  const coachText = voiceCoachText || localCoachCue;
+  const realtimeActive =
+    realtimeConnected &&
+    realtimeStatus !== "closed" &&
+    realtimeStatus !== "error" &&
+    realtimeStatus !== "idle";
+  const realtimeTimeLeftMs = realtimeExpiresAt
+    ? Math.max(0, realtimeExpiresAt - clockNow)
+    : 0;
+
+  useEffect(() => {
+    const session = realtimeSessionRef.current;
+    if (!realtimeConnected || !session) return;
+
+    let eventKey: string;
+    let eventText: string;
+    if (mode === "reps") {
+      if (repCount <= 0) return;
+      eventKey = `reps:${repCount}:${isDone ? "done" : "active"}`;
+      eventText = [
+        "[LOCAL_ACTIVITY_EVENT]",
+        `exercise=${exerciseLabel}`,
+        "mode=reps",
+        `completed_reps=${repCount}`,
+        `target_reps=${targetReps}`,
+        `remaining_reps=${repsLeft}`,
+        `form_quality=${debugQuality ? "ok" : "unclear"}`,
+        `completed=${isDone ? "yes" : "no"}`,
+      ].join("; ");
+    } else {
+      if (holdSec <= 0 && !holdState.inPosition) return;
+      const holdMilestone = Math.floor(holdSec / 5);
+      eventKey = `hold:${holdMilestone}:${holdState.inPosition ? "holding" : "paused"}:${
+        isDone ? "done" : "active"
+      }`;
+      eventText = [
+        "[LOCAL_ACTIVITY_EVENT]",
+        `exercise=${exerciseLabel}`,
+        "mode=hold",
+        `hold_seconds=${holdSec}`,
+        `target_seconds=${targetDurationSec}`,
+        `remaining_seconds=${Math.max(0, targetDurationSec - holdSec)}`,
+        `in_position=${holdState.inPosition ? "yes" : "no"}`,
+        `form_quality=${debugQuality ? "ok" : "unclear"}`,
+        `completed=${isDone ? "yes" : "no"}`,
+      ].join("; ");
+    }
+
+    if (lastMovementEventKeyRef.current === eventKey) return;
+    lastMovementEventKeyRef.current = eventKey;
+    session.sendText(eventText, { replacePending: true });
+  }, [
+    debugQuality,
+    exerciseLabel,
+    holdSec,
+    holdState.inPosition,
+    isDone,
+    mode,
+    realtimeConnected,
+    repCount,
+    repsLeft,
+    targetDurationSec,
+    targetReps,
+  ]);
 
   // Mapped overlay points
   const mappedPoints = useMemo(() => {
@@ -283,14 +586,17 @@ export default function ExerciseCameraSession({
     let portraitH: number;
     const toPortrait = (nx: number, ny: number): [number, number] => {
       switch (ori) {
+        case "landscape-left":
         case 2: return [1 - ny, nx];
+        case "landscape-right":
         case 3: return [ny, 1 - nx];
+        case "portrait-upside-down":
         case 1: return [1 - nx, 1 - ny];
         default: return [nx, ny];
       }
     };
 
-    if (ori === 2 || ori === 3) {
+    if (ori === 2 || ori === 3 || ori === "landscape-left" || ori === "landscape-right") {
       portraitW = bufH;
       portraitH = bufW;
     } else {
@@ -328,7 +634,9 @@ export default function ExerciseCameraSession({
       helperText = "Auto counting is on, but no pose yet. Step back and keep your full body visible.";
     }
   } else if (runtimeState === "camera-ready") {
-    helperText = "Camera is ready, but the pose plugin is not loaded. Rebuild the dev client and retry.";
+    helperText = Worklets
+      ? "Camera is ready, but the pose plugin is not loaded. Rebuild the dev client and retry."
+      : "Camera is ready, but Worklets is missing from this build. Rebuild the dev client and retry.";
   } else if (runtimeState === "permission-needed") {
     helperText = "Allow camera permission to use front-camera exercise verification.";
   }
@@ -355,12 +663,47 @@ export default function ExerciseCameraSession({
     ? "Put your entire body in frame and follow the rep guide."
     : "Get into position and hold it. Timer pauses if you break form.";
 
-  const handleComplete = () => {
-    if (!isDone) return;
+  const handleComplete = async () => {
+    if (!isDone || cancelPendingRef.current) return;
+    await stopRealtime("completed");
     onComplete(mode === "reps" ? repCount : holdSec);
   };
 
+  const confirmCancel = useCallback(() => {
+    if (cancelPendingRef.current) return;
+    Alert.alert(
+      "Are you sure you want to stop?",
+      "Your progress in this activity will not be counted.",
+      [
+        { text: "Keep going", style: "cancel" },
+        {
+          text: "Stop activity",
+          style: "destructive",
+          onPress: () => {
+            if (cancelPendingRef.current) return;
+            cancelPendingRef.current = true;
+            setCancelPending(true);
+            void (async () => {
+              await stopRealtime("user");
+              onCancel();
+            })();
+          },
+        },
+      ],
+    );
+  }, [onCancel, stopRealtime]);
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener("hardwareBackPress", () => {
+      confirmCancel();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [confirmCancel]);
+
   const handleReset = () => {
+    lastMovementEventKeyRef.current = "";
+    setVoiceCoachText("");
     if (mode === "reps") {
       setCounterState(createInitialRepState(exerciseKey));
     } else {
@@ -380,11 +723,29 @@ export default function ExerciseCameraSession({
       ]}
     >
       <View style={styles.header}>
-        <Pressable onPress={onCancel} style={styles.headerBtn}>
+        <Pressable
+          onPress={confirmCancel}
+          disabled={cancelPending}
+          style={[styles.headerBtn, cancelPending && styles.headerBtnDisabled]}
+          accessibilityRole="button"
+          accessibilityLabel="Close exercise"
+        >
           <MaterialIcons name="arrow-back-ios-new" size={20} color="#FFFFFF" />
         </Pressable>
         <Text style={styles.headerTitle}>{exerciseLabel}</Text>
-        <View style={styles.headerBtn} />
+        <Pressable
+          onPress={toggleRealtime}
+          disabled={cancelPending}
+          style={[styles.headerBtn, cancelPending && styles.headerBtnDisabled]}
+          accessibilityRole="button"
+          accessibilityLabel={realtimeActive ? "Stop live voice coach" : "Start live voice coach"}
+        >
+          <MaterialIcons
+            name={realtimeActive ? "graphic-eq" : realtimeStatus === "connecting" ? "sync" : "mic"}
+            size={22}
+            color={realtimeActive ? "#00E5A0" : "#FFFFFF"}
+          />
+        </Pressable>
       </View>
 
       <View style={styles.cameraCard}>
@@ -392,7 +753,7 @@ export default function ExerciseCameraSession({
           <CameraView
             style={StyleSheet.absoluteFill}
             device={device}
-            isActive
+            isActive={appState === "active"}
             photo={false}
             video={false}
             audio={false}
@@ -474,6 +835,16 @@ export default function ExerciseCameraSession({
         bounces={false}
       >
         <Text style={styles.instructions}>{instructionText}</Text>
+        <View style={styles.coachCard}>
+          <View style={[styles.coachDot, realtimeActive && styles.coachDotLive]} />
+          <Text style={styles.coachText}>{coachText || localCoachCue}</Text>
+        </View>
+        {realtimeActive && realtimeExpiresAt ? (
+          <Text style={styles.voiceTime}>
+            {formatCountdown(realtimeTimeLeftMs)} voice time left · 5 min max
+          </Text>
+        ) : null}
+        {voiceError ? <Text style={styles.voiceError}>{voiceError}</Text> : null}
         <Text style={styles.helperText}>{helperText}</Text>
         {__DEV__ ? (
           <Text style={styles.helperDebug}>
@@ -489,39 +860,44 @@ export default function ExerciseCameraSession({
 
         <View style={styles.bottomSpacer} />
 
-        <View style={styles.toolsRow}>
-          {mode === "reps" ? (
+        {__DEV__ ? (
+          <View style={styles.toolsRow}>
+            {mode === "reps" ? (
+              <Pressable
+                style={styles.toolBtn}
+                onPress={() => setCounterState((prev) => ({ ...prev, repCount: prev.repCount + 1 }))}
+              >
+                <MaterialIcons name="add" size={18} color="#0A0A0F" />
+                <Text style={styles.toolBtnText}>Test Rep</Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                style={styles.toolBtn}
+                onPress={() =>
+                  setHoldState((prev) => ({ ...prev, accumulatedMs: prev.accumulatedMs + 5000 }))
+                }
+              >
+                <MaterialIcons name="add" size={18} color="#0A0A0F" />
+                <Text style={styles.toolBtnText}>+5 sec</Text>
+              </Pressable>
+            )}
             <Pressable
-              style={styles.toolBtn}
-              onPress={() => setCounterState((prev) => ({ ...prev, repCount: prev.repCount + 1 }))}
+              style={[styles.toolBtn, styles.toolBtnGhost]}
+              onPress={handleReset}
             >
-              <MaterialIcons name="add" size={18} color="#0A0A0F" />
-              <Text style={styles.toolBtnText}>Test Rep</Text>
+              <MaterialIcons name="restart-alt" size={18} color="#FFFFFF" />
+              <Text style={[styles.toolBtnText, { color: "#FFFFFF" }]}>Reset</Text>
             </Pressable>
-          ) : (
-            <Pressable
-              style={styles.toolBtn}
-              onPress={() =>
-                setHoldState((prev) => ({ ...prev, accumulatedMs: prev.accumulatedMs + 5000 }))
-              }
-            >
-              <MaterialIcons name="add" size={18} color="#0A0A0F" />
-              <Text style={styles.toolBtnText}>+5 sec</Text>
-            </Pressable>
-          )}
-          <Pressable
-            style={[styles.toolBtn, styles.toolBtnGhost]}
-            onPress={handleReset}
-          >
-            <MaterialIcons name="restart-alt" size={18} color="#FFFFFF" />
-            <Text style={[styles.toolBtnText, { color: "#FFFFFF" }]}>Reset</Text>
-          </Pressable>
-        </View>
+          </View>
+        ) : null}
 
         <Pressable
-          style={[styles.ctaBtn, !isDone && styles.ctaBtnDisabled]}
-          onPress={handleComplete}
-          disabled={!isDone}
+          style={[
+            styles.ctaBtn,
+            (!isDone || cancelPending) && styles.ctaBtnDisabled,
+          ]}
+          onPress={() => void handleComplete()}
+          disabled={!isDone || cancelPending}
         >
           <Text style={styles.ctaText}>{ctaLabel}</Text>
         </Pressable>
@@ -560,6 +936,9 @@ const styles = StyleSheet.create({
     borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
+  },
+  headerBtnDisabled: {
+    opacity: 0.45,
   },
   headerTitle: {
     color: "#FFFFFF",
@@ -623,6 +1002,50 @@ const styles = StyleSheet.create({
     marginTop: 0,
     paddingHorizontal: 4,
     lineHeight: 21,
+  },
+  coachCard: {
+    marginTop: 10,
+    minHeight: 52,
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: "rgba(255,255,255,0.1)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  coachDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: "rgba(255,255,255,0.35)",
+  },
+  coachDotLive: {
+    backgroundColor: "#00E5A0",
+  },
+  coachText: {
+    flex: 1,
+    color: "#FFFFFF",
+    fontSize: 14,
+    fontWeight: "800",
+    lineHeight: 19,
+  },
+  voiceTime: {
+    color: "rgba(255,255,255,0.72)",
+    fontSize: 11,
+    fontWeight: "700",
+    marginTop: 6,
+    textAlign: "center",
+  },
+  voiceError: {
+    color: "#FF8A8A",
+    fontSize: 12,
+    fontWeight: "700",
+    lineHeight: 17,
+    marginTop: 6,
+    textAlign: "center",
   },
   helperText: {
     color: "rgba(255,255,255,0.66)",

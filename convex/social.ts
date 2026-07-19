@@ -11,6 +11,8 @@ function generateCode(): string {
   return code;
 }
 
+const FRIEND_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{6}$/;
+
 // ─── FRIEND CODE ─────────────────────────────────────
 
 export const getMyFriendCode = query({
@@ -22,7 +24,7 @@ export const getMyFriendCode = query({
     const profile = await ctx.db
       .query("profiles")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .unique();
+      .first();
 
     return profile?.friendCode ?? null;
   },
@@ -37,22 +39,24 @@ export const generateFriendCode = mutation({
     const profile = await ctx.db
       .query("profiles")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .unique();
+      .first();
     if (!profile) throw new Error("Profile not found");
 
     if (profile.friendCode) return profile.friendCode;
 
-    let code = generateCode();
-    let attempts = 0;
-    while (attempts < 10) {
+    let code: string | null = null;
+    for (let attempt = 0; attempt < 10; attempt++) {
+      const candidate = generateCode();
       const existing = await ctx.db
         .query("profiles")
-        .withIndex("by_friendCode", (q) => q.eq("friendCode", code))
+        .withIndex("by_friendCode", (q) => q.eq("friendCode", candidate))
         .unique();
-      if (!existing) break;
-      code = generateCode();
-      attempts++;
+      if (!existing) {
+        code = candidate;
+        break;
+      }
     }
+    if (!code) throw new Error("Could not generate a unique friend code");
 
     await ctx.db.patch(profile._id, { friendCode: code });
     return code;
@@ -66,23 +70,36 @@ export const addFriendByCode = mutation({
     if (!userId) throw new Error("Not authenticated");
 
     const normalized = args.code.trim().toUpperCase();
-    if (normalized.length !== 6) throw new Error("Invalid friend code");
+    if (!FRIEND_CODE_PATTERN.test(normalized)) {
+      throw new Error("Invalid friend code");
+    }
 
     const friendProfile = await ctx.db
       .query("profiles")
       .withIndex("by_friendCode", (q) => q.eq("friendCode", normalized))
-      .unique();
+      .first();
     if (!friendProfile) throw new Error("No user found with that code");
     if (friendProfile.userId === userId)
       throw new Error("That's your own code!");
 
     const existing = await ctx.db
       .query("friends")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .withIndex("by_userId_friendId", (q) =>
+        q.eq("userId", userId).eq("friendId", friendProfile.userId),
+      )
+      .first();
 
-    if (existing.some((f) => f.friendId === friendProfile.userId)) {
+    if (existing) {
       throw new Error("You're already friends!");
+    }
+    const reverseExisting = await ctx.db
+      .query("friends")
+      .withIndex("by_userId_friendId", (q) =>
+        q.eq("userId", friendProfile.userId).eq("friendId", userId),
+      )
+      .first();
+    if (reverseExisting) {
+      throw new Error("A friend request already exists");
     }
 
     await ctx.db.insert("friends", {
@@ -173,11 +190,22 @@ export const sendFriendRequest = mutation({
 
     const existing = await ctx.db
       .query("friends")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .withIndex("by_userId_friendId", (q) =>
+        q.eq("userId", userId).eq("friendId", args.friendId),
+      )
+      .first();
 
-    if (existing.some((f) => f.friendId === args.friendId)) {
+    if (existing) {
       throw new Error("Friend request already exists");
+    }
+    const reverseExisting = await ctx.db
+      .query("friends")
+      .withIndex("by_userId_friendId", (q) =>
+        q.eq("userId", args.friendId).eq("friendId", userId),
+      )
+      .first();
+    if (reverseExisting) {
+      throw new Error("This user has already sent you a friend request");
     }
 
     await ctx.db.insert("friends", {
@@ -200,11 +228,21 @@ export const acceptFriend = mutation({
 
     await ctx.db.patch(args.requestId, { status: "accepted" });
 
-    await ctx.db.insert("friends", {
-      userId,
-      friendId: request.userId,
-      status: "accepted",
-    });
+    const reverse = await ctx.db
+      .query("friends")
+      .withIndex("by_userId_friendId", (q) =>
+        q.eq("userId", userId).eq("friendId", request.userId),
+      )
+      .first();
+    if (reverse) {
+      await ctx.db.patch(reverse._id, { status: "accepted" });
+    } else {
+      await ctx.db.insert("friends", {
+        userId,
+        friendId: request.userId,
+        status: "accepted",
+      });
+    }
   },
 });
 
@@ -228,21 +266,21 @@ export const removeFriend = mutation({
     const userId = await auth.getUserId(ctx);
     if (!userId) throw new Error("Not authenticated");
 
-    const myRows = await ctx.db
+    const myRow = await ctx.db
       .query("friends")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
-    for (const row of myRows) {
-      if (row.friendId === args.friendId) await ctx.db.delete(row._id);
-    }
+      .withIndex("by_userId_friendId", (q) =>
+        q.eq("userId", userId).eq("friendId", args.friendId),
+      )
+      .first();
+    if (myRow) await ctx.db.delete(myRow._id);
 
-    const theirRows = await ctx.db
+    const theirRow = await ctx.db
       .query("friends")
-      .withIndex("by_userId", (q) => q.eq("userId", args.friendId))
-      .collect();
-    for (const row of theirRows) {
-      if (row.friendId === userId) await ctx.db.delete(row._id);
-    }
+      .withIndex("by_userId_friendId", (q) =>
+        q.eq("userId", args.friendId).eq("friendId", userId),
+      )
+      .first();
+    if (theirRow) await ctx.db.delete(theirRow._id);
   },
 });
 
@@ -252,12 +290,13 @@ export const checkFriendship = query({
     const userId = await auth.getUserId(ctx);
     if (!userId) return "none";
 
-    const rows = await ctx.db
+    const match = await ctx.db
       .query("friends")
-      .withIndex("by_userId", (q) => q.eq("userId", userId))
-      .collect();
+      .withIndex("by_userId_friendId", (q) =>
+        q.eq("userId", userId).eq("friendId", args.otherUserId),
+      )
+      .first();
 
-    const match = rows.find((r) => r.friendId === args.otherUserId);
     if (!match) return "none";
     return match.status as "accepted" | "pending";
   },
@@ -328,9 +367,10 @@ export const getFriendActivity = query({
 
     const recentGifts = await ctx.db
       .query("gifts")
-      .withIndex("by_fromUser_date", (q) => q.eq("fromUserId", userId))
-      .collect()
-      .then((g) => g.filter((gift) => gift.sentAt >= oneDayAgo));
+      .withIndex("by_fromUser_date", (q) =>
+        q.eq("fromUserId", userId).gte("sentAt", oneDayAgo),
+      )
+      .collect();
 
     for (const gift of recentGifts.slice(0, 5)) {
       const recipientProfile = await ctx.db

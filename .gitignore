@@ -41,6 +41,7 @@ app-example
 # generated native folders
 /ios
 /android
+modules/*/android/build/
 
 # logs & tooling
 *.log
