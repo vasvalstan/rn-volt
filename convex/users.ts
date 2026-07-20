@@ -221,6 +221,16 @@ export const updateProfile = mutation({
     }
 
     await ctx.db.patch(profile._id, updates);
+    if (args.onboardingComplete === true && !profile.onboardingComplete) {
+      await ctx.db.insert("growthEvents", {
+        userId,
+        name: "onboarding_completed",
+        occurredAt: Date.now(),
+        properties: {
+          screen: "onboarding",
+        },
+      });
+    }
   },
 });
 

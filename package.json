@@ -4,6 +4,7 @@
   "version": "1.0.0",
   "scripts": {
     "start": "expo start",
+    "dev": "bash scripts/dev.sh",
     "start:mcp": "EXPO_UNSTABLE_MCP_SERVER=1 expo start",
     "start:tunnel": "expo start --tunnel",
     "start:dev-client": "expo start --dev-client",
@@ -64,6 +65,7 @@
     "expo-speech": "~56.0.3",
     "expo-splash-screen": "~56.0.13",
     "expo-status-bar": "~56.0.4",
+    "expo-store-review": "~56.0.3",
     "expo-symbols": "~56.0.6",
     "expo-system-ui": "~56.0.5",
     "expo-task-manager": "~56.0.22",

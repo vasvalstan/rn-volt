@@ -15,6 +15,7 @@ import type * as crons from "../crons.js";
 import type * as fuelMetrics from "../fuelMetrics.js";
 import type * as fuelRollups from "../fuelRollups.js";
 import type * as gifts from "../gifts.js";
+import type * as growth from "../growth.js";
 import type * as http from "../http.js";
 import type * as leaderboard from "../leaderboard.js";
 import type * as leaderboardUtils from "../leaderboardUtils.js";
@@ -41,6 +42,7 @@ declare const fullApi: ApiFromModules<{
   fuelMetrics: typeof fuelMetrics;
   fuelRollups: typeof fuelRollups;
   gifts: typeof gifts;
+  growth: typeof growth;
   http: typeof http;
   leaderboard: typeof leaderboard;
   leaderboardUtils: typeof leaderboardUtils;

@@ -55,6 +55,10 @@ export default defineSchema({
     equippedShieldTheme: v.optional(v.string()),
     /** Unique 6-char alphanumeric friend code for adding friends. */
     friendCode: v.optional(v.string()),
+    /** Set once we have asked for an App Store / Play Store rating. */
+    reviewPromptedAt: v.optional(v.number()),
+    /** Set after the one-time two-sided referral spotlight is shown in Social. */
+    socialReferralIntroSeenAt: v.optional(v.number()),
   })
     .index("by_userId", ["userId"])
     .index("by_totalDp", ["totalDp"])
@@ -144,6 +148,43 @@ export default defineSchema({
     .index("by_userId", ["userId"])
     .index("by_userId_friendId", ["userId", "friendId"])
     .index("by_friendId", ["friendId"]),
+
+  /** Two-sided referral attribution. Rewards unlock after the invitee's first activity. */
+  referrals: defineTable({
+    inviterUserId: v.id("users"),
+    invitedUserId: v.id("users"),
+    friendCode: v.string(),
+    status: v.union(v.literal("accepted"), v.literal("activated")),
+    acceptedAt: v.number(),
+    activatedAt: v.optional(v.number()),
+    rewardCoins: v.number(),
+    rewardFreezes: v.number(),
+  })
+    .index("by_invitedUserId", ["invitedUserId"])
+    .index("by_invitedUserId_status", ["invitedUserId", "status"])
+    .index("by_inviterUserId", ["inviterUserId"]),
+
+  /** First-party product analytics for activation, retention, sharing, and revenue funnels. */
+  growthEvents: defineTable({
+    userId: v.id("users"),
+    name: v.string(),
+    occurredAt: v.number(),
+    properties: v.optional(
+      v.object({
+        activityType: v.optional(v.string()),
+        screen: v.optional(v.string()),
+        milestone: v.optional(v.string()),
+        shareType: v.optional(v.string()),
+        currentStreak: v.optional(v.number()),
+        minutesEarned: v.optional(v.number()),
+        value: v.optional(v.number()),
+        success: v.optional(v.boolean()),
+      }),
+    ),
+  })
+    .index("by_userId", ["userId"])
+    .index("by_name_occurredAt", ["name", "occurredAt"])
+    .index("by_userId_name", ["userId", "name"]),
 
   weeklyScores: defineTable({
     userId: v.id("users"),

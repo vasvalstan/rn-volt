@@ -1,5 +1,6 @@
 import { Image } from "expo-image";
 import { StatusBar } from "expo-status-bar";
+import * as StoreReview from "expo-store-review";
 import { MaterialIcons } from "@react-native-vector-icons/material-icons";
 import { DeviceActivitySelectionSheetView } from "react-native-device-activity";
 import { useEffect, useState, useCallback, useMemo, useRef, type ComponentProps, type ReactNode } from "react";
@@ -349,7 +350,7 @@ const SHIELD_ICON_XML: Record<ShieldAppName, string> = {
 
 const SHIELD_SUMMARY_XML = `<svg width="652" height="606" viewBox="0 0 652 606" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M353.554 0H298.446C273.006 0 249.684 14.6347 237.962 37.9539L4.37994 502.646C-1.04325 513.435 -1.45067 526.178 3.2716 537.313L22.6123 582.918C34.6475 611.297 72.5404 614.156 88.4414 587.885L309.863 222.063C313.34 216.317 319.439 212.826 326 212.826C332.561 212.826 338.659 216.317 342.137 222.063L563.559 587.885C579.46 614.156 617.352 611.297 629.388 582.918L648.728 537.313C653.451 526.178 653.043 513.435 647.62 502.646L414.038 37.9539C402.316 14.6347 378.994 0 353.554 0Z" fill="white"/></svg>`;
 
-const ACTIVITIES = [
+const BASE_ACTIVITIES = [
   {
     key: "run",
     icon: "directions-run" as const,
@@ -492,21 +493,6 @@ const ACTIVITIES = [
     instructions: "Camera counts your reps automatically.",
   },
   {
-    key: "plank",
-    icon: "airline-seat-flat" as const,
-    name: "Plank",
-    effortLabel: "20 sec",
-    verify: "Camera Verified",
-    color: C.indigo,
-    bg: C.indigoLight,
-    dp: 25,
-    minutes: 8,
-    verificationMethod: "camera",
-    category: "physical" as ActivityCategory,
-    effortDurationSec: 0,
-    instructions: "Camera tracks your hold time.",
-  },
-  {
     key: "wallsit",
     icon: "event-seat" as const,
     name: "Wall Sit",
@@ -520,36 +506,6 @@ const ACTIVITIES = [
     category: "physical" as ActivityCategory,
     effortDurationSec: 0,
     instructions: "Camera tracks your hold time.",
-  },
-  {
-    key: "situps",
-    icon: "airline-seat-flat-angled" as const,
-    name: "Sit-ups",
-    effortLabel: "15 reps",
-    verify: "Camera Verified",
-    color: C.lime,
-    bg: C.limeLight,
-    dp: 25,
-    minutes: 8,
-    verificationMethod: "camera",
-    category: "physical" as ActivityCategory,
-    effortDurationSec: 0,
-    instructions: "Camera counts your reps automatically.",
-  },
-  {
-    key: "stretch",
-    icon: "accessibility" as const,
-    name: "Stretch",
-    effortLabel: "30 sec",
-    verify: "Timer",
-    color: C.teal,
-    bg: C.tealLight,
-    dp: 15,
-    minutes: 5,
-    verificationMethod: "timer",
-    category: "physical" as ActivityCategory,
-    effortDurationSec: 30,
-    instructions: "Stand up and do a full-body stretch. Reach for the ceiling, touch your toes, roll your shoulders.",
   },
   {
     key: "focusdot",
@@ -629,135 +585,73 @@ const ACTIVITIES = [
     effortDurationSec: 30,
     instructions: "Stand up, walk out of the room, take 3 deep breaths, then come back.",
   },
-  {
-    key: "phonebed",
-    icon: "bedtime" as const,
-    name: "Wind-down",
-    effortLabel: "5 min",
-    verify: "Self Report",
-    color: C.indigo,
-    bg: C.indigoLight,
-    limit: "1x Daily",
-    dp: 15,
-    minutes: 5,
-    verificationMethod: "self-report",
-    category: "micro" as ActivityCategory,
-    effortDurationSec: 300,
-    instructions: "Put your phone in another room or on a shelf. Spend at least 5 minutes without it before bed.",
-  },
-  {
-    key: "clean",
-    icon: "cleaning-services" as const,
-    name: "Clean",
-    effortLabel: "2 min",
-    verify: "Self Report",
-    color: C.sky,
-    bg: C.skyLight,
-    limit: "2x Daily",
-    dp: 10,
-    minutes: 4,
-    verificationMethod: "self-report",
-    category: "micro" as ActivityCategory,
-    effortDurationSec: 120,
-    instructions: "Pick one area — desk, kitchen counter, floor — and clean it up for 2 minutes.",
-  },
-  {
-    key: "instrument",
-    icon: "piano" as const,
-    name: "Practice instrument",
-    effortLabel: "5 min",
-    verify: "Self Report",
-    color: C.purple,
-    bg: C.purpleLight,
-    limit: "2x Daily",
-    dp: 12,
-    minutes: 4,
-    verificationMethod: "self-report",
-    category: "micro" as ActivityCategory,
-    effortDurationSec: 300,
-    instructions: "Pick up your instrument and practice for at least 5 minutes. Scales, a song, anything counts.",
-  },
-  {
-    key: "study",
-    icon: "menu-book" as const,
-    name: "Study",
-    effortLabel: "5 min",
-    verify: "Self Report",
-    color: C.amber,
-    bg: C.amberLight,
-    limit: "2x Daily",
-    dp: 12,
-    minutes: 5,
-    verificationMethod: "self-report",
-    category: "micro" as ActivityCategory,
-    effortDurationSec: 300,
-    instructions: "Open your study material and focus for at least 5 minutes. No phone, no distractions.",
-  },
-  {
-    key: "read",
-    icon: "auto-stories" as const,
-    name: "Read",
-    effortLabel: "5 min",
-    verify: "Self Report",
-    color: C.rose,
-    bg: C.roseLight,
-    limit: "2x Daily",
-    dp: 10,
-    minutes: 4,
-    verificationMethod: "self-report",
-    category: "micro" as ActivityCategory,
-    effortDurationSec: 300,
-    instructions: "Pick up a book (not your phone) and read for at least 5 minutes.",
-  },
-  {
-    key: "cookmeal",
-    icon: "restaurant" as const,
-    name: "Cook a meal",
-    effortLabel: "2 min",
-    verify: "Self Report",
-    color: C.mint,
-    bg: C.mintLight,
-    limit: "1x Daily",
-    dp: 12,
-    minutes: 5,
-    verificationMethod: "self-report",
-    category: "micro" as ActivityCategory,
-    effortDurationSec: 120,
-    instructions: "Prepare a real meal — not just microwaving. Even a simple dish counts.",
-  },
-  {
-    key: "grayscale",
-    icon: "tonality" as const,
-    name: "Grayscale block",
-    effortLabel: "5 min",
-    verify: "Self Report",
-    color: C.black,
-    bg: C.muted,
-    limit: "1x Daily",
-    dp: 18,
-    minutes: 6,
-    verificationMethod: "self-report",
-    category: "anti-scroll" as ActivityCategory,
-    effortDurationSec: 300,
-    instructions: "Turn on grayscale mode on your phone (Settings > Accessibility) and leave it for at least 5 minutes.",
-  },
-  {
-    key: "scrollreset",
-    icon: "psychology" as const,
-    name: "Scroll Reset",
-    effortLabel: "1 min",
-    verify: "AI Coach",
-    color: C.hotPink,
-    bg: C.hotPinkLight,
-    limit: "3x Daily",
-    dp: 8,
-    minutes: 2,
-    verificationMethod: "self-report",
-    category: "anti-scroll" as ActivityCategory,
-    effortDurationSec: 60,
-    instructions: "Pause after heavy social use and talk through the urge before unlocking more time.",
-  },
 ];
+
+/**
+ * Activities from the Volt Figma catalog (node 536:3504).
+ * Keep these as data so the library can stay aligned with the product catalog
+ * without duplicating the existing logging and reward flow.
+ */
+const FIGMA_ACTIVITIES = [
+  { key: "crunches", icon: "airline-seat-flat-angled", name: "Crunches", effortLabel: "10 reps", verify: "Self Report", color: C.rose, bg: C.roseLight, category: "physical" as ActivityCategory, instructions: "Complete controlled crunches.", effortDurationSec: 0 },
+  { key: "mountainclimber", icon: "terrain", name: "Mountain climber", effortLabel: "10 reps", verify: "Self Report", color: C.orange, bg: C.orangeLight, category: "physical" as ActivityCategory, instructions: "Move through mountain climbers at your own pace.", effortDurationSec: 0 },
+  { key: "glutebridge", icon: "accessibility-new", name: "Glute bridge", effortLabel: "10 reps", verify: "Self Report", color: C.mint, bg: C.mintLight, category: "physical" as ActivityCategory, instructions: "Lift and lower your hips with control.", effortDurationSec: 0 },
+  { key: "sumosquats", icon: "accessibility", name: "Sumo squats", effortLabel: "10 reps", verify: "Self Report", color: C.amber, bg: C.amberLight, category: "physical" as ActivityCategory, instructions: "Complete wide-stance squats.", effortDurationSec: 0 },
+  { key: "lunges", icon: "directions-run", name: "Lunges", effortLabel: "10 reps", verify: "Self Report", color: C.purple, bg: C.purpleLight, category: "physical" as ActivityCategory, instructions: "Complete alternating lunges.", effortDurationSec: 0 },
+  { key: "sidelunges", icon: "swap-vert", name: "Side lunges", effortLabel: "10 reps", verify: "Self Report", color: C.sky, bg: C.skyLight, category: "physical" as ActivityCategory, instructions: "Step side to side and bend into each lunge.", effortDurationSec: 0 },
+  { key: "armcircles", icon: "sync", name: "Arm circles", effortLabel: "30 sec", verify: "Timer", color: C.teal, bg: C.tealLight, category: "physical" as ActivityCategory, instructions: "Circle your arms smoothly in both directions.", effortDurationSec: 30 },
+  { key: "bodytwist", icon: "rotate-right", name: "Body twist (russian twist)", effortLabel: "10 reps", verify: "Self Report", color: C.indigo, bg: C.indigoLight, category: "physical" as ActivityCategory, instructions: "Twist gently from side to side.", effortDurationSec: 0 },
+  { key: "highkneerun", icon: "directions-run", name: "High knee run", effortLabel: "1 min", verify: "Timer", color: C.hotPink, bg: C.hotPinkLight, category: "physical" as ActivityCategory, instructions: "Run in place while lifting your knees.", effortDurationSec: 60 },
+  { key: "bicyclecrunches", icon: "pedal-bike", name: "Bicycle crunches", effortLabel: "10 reps", verify: "Self Report", color: C.rose, bg: C.roseLight, category: "physical" as ActivityCategory, instructions: "Alternate elbow-to-knee bicycle crunches.", effortDurationSec: 0 },
+  { key: "scissorkicks", icon: "content-cut", name: "Scissors kicks/ flutter kicks", effortLabel: "30 sec", verify: "Timer", color: C.sky, bg: C.skyLight, category: "physical" as ActivityCategory, instructions: "Alternate your legs with a controlled kick.", effortDurationSec: 30 },
+  { key: "onelegsquats", icon: "looks-one", name: "One-leg Squats", effortLabel: "10 reps", verify: "Self Report", color: C.purple, bg: C.purpleLight, category: "physical" as ActivityCategory, instructions: "Complete supported single-leg squats.", effortDurationSec: 0 },
+  { key: "onelegjumping", icon: "directions-run", name: "one-leg jumping", effortLabel: "30 sec", verify: "Timer", color: C.orange, bg: C.orangeLight, category: "physical" as ActivityCategory, instructions: "Hop carefully on one leg, then switch.", effortDurationSec: 30 },
+  { key: "forearmplank", icon: "airline-seat-flat", name: "Forearm Plank", effortLabel: "1 min", verify: "Timer", color: C.indigo, bg: C.indigoLight, category: "physical" as ActivityCategory, instructions: "Hold a steady forearm plank.", effortDurationSec: 60 },
+  { key: "sideplank", icon: "accessibility", name: "Side plank", effortLabel: "1 min", verify: "Timer", color: C.teal, bg: C.tealLight, category: "physical" as ActivityCategory, instructions: "Hold a side plank on each side.", effortDurationSec: 60 },
+  { key: "legstretch", icon: "accessibility", name: "Leg Stretch", effortLabel: "10 min", verify: "Timer", color: C.mint, bg: C.mintLight, category: "physical" as ActivityCategory, instructions: "Take ten minutes for a gentle leg stretch.", effortDurationSec: 600 },
+  { key: "sidestretch", icon: "unfold-more", name: "Side stretch", effortLabel: "1 min", verify: "Timer", color: C.sky, bg: C.skyLight, category: "physical" as ActivityCategory, instructions: "Stretch gently through both sides of your body.", effortDurationSec: 60 },
+  { key: "forwardfold", icon: "expand-more", name: "Forward fold", effortLabel: "1 min", verify: "Timer", color: C.amber, bg: C.amberLight, category: "physical" as ActivityCategory, instructions: "Relax into a gentle forward fold.", effortDurationSec: 60 },
+  { key: "smile", icon: "mood", name: "Smile", effortLabel: "1 min", verify: "Self Report", color: C.electricYellow, bg: C.electricYellowLight, category: "mindful" as ActivityCategory, instructions: "Pause and bring a relaxed smile to your face.", effortDurationSec: 60 },
+  { key: "visualizegoals", icon: "flag", name: "Visualize your goals", effortLabel: "5 min", verify: "Self Report", color: C.purple, bg: C.purpleLight, category: "mindful" as ActivityCategory, instructions: "Visualize one goal and the next step toward it.", effortDurationSec: 300 },
+  { key: "positiveaffirmations", icon: "format-quote", name: "Positive affirmations", effortLabel: "5 min", verify: "Self Report", color: C.rose, bg: C.roseLight, category: "mindful" as ActivityCategory, instructions: "Repeat a few encouraging affirmations.", effortDurationSec: 300 },
+  { key: "grounding", icon: "park", name: "Grounding", effortLabel: "10 min", verify: "Timer", color: C.mint, bg: C.mintLight, category: "mindful" as ActivityCategory, instructions: "Use your senses to reconnect with the present moment.", effortDurationSec: 600 },
+  { key: "boxbreathing", icon: "crop-square", name: "Box breathing (4-4-4-4)", effortLabel: "5 min", verify: "Guided", color: C.teal, bg: C.tealLight, category: "mindful" as ActivityCategory, instructions: "Breathe in, hold, breathe out, hold — four seconds each.", effortDurationSec: 300 },
+  { key: "windowobserve", icon: "window", name: "Window observe", effortLabel: "5 min", verify: "Timer", color: C.sky, bg: C.skyLight, category: "mindful" as ActivityCategory, instructions: "Observe the world outside a window without your phone.", effortDurationSec: 300 },
+  { key: "humsinging", icon: "music-note", name: "Hum singing", effortLabel: "1 min", verify: "Self Report", color: C.purple, bg: C.purpleLight, category: "mindful" as ActivityCategory, instructions: "Hum or sing a song for a minute.", effortDurationSec: 60 },
+  { key: "selfhugging", icon: "favorite", name: "Self-hugging", effortLabel: "1 min", verify: "Self Report", color: C.rose, bg: C.roseLight, category: "mindful" as ActivityCategory, instructions: "Give yourself a calming, supportive hug.", effortDurationSec: 60 },
+  { key: "bodytap", icon: "touch-app", name: "Body tap", effortLabel: "5 min", verify: "Self Report", color: C.orange, bg: C.orangeLight, category: "mindful" as ActivityCategory, instructions: "Lightly tap along your arms, chest and legs.", effortDurationSec: 300 },
+  { key: "facemassage", icon: "face", name: "Face massage", effortLabel: "5 min", verify: "Self Report", color: C.amber, bg: C.amberLight, category: "mindful" as ActivityCategory, instructions: "Massage your face gently and slowly.", effortDurationSec: 300 },
+  { key: "readapage", icon: "auto-stories", name: "Read a page", effortLabel: "1 page", verify: "Self Report", color: C.rose, bg: C.roseLight, category: "micro" as ActivityCategory, instructions: "Read one page of a book.", effortDurationSec: 60 },
+  { key: "declutterdrawer", icon: "inbox", name: "Declutter a drawer", effortLabel: "10 min", verify: "Self Report", color: C.sky, bg: C.skyLight, category: "micro" as ActivityCategory, instructions: "Clear one drawer for ten minutes.", effortDurationSec: 600 },
+  { key: "cleanmirror", icon: "cleaning-services", name: "Clean a mirror", effortLabel: "5 min", verify: "Self Report", color: C.mint, bg: C.mintLight, category: "micro" as ActivityCategory, instructions: "Clean one mirror until it shines.", effortDurationSec: 300 },
+  { key: "lightcandle", icon: "local-fire-department", name: "Light a candle", effortLabel: "1 min", verify: "Self Report", color: C.electricYellow, bg: C.electricYellowLight, category: "micro" as ActivityCategory, instructions: "Light a candle safely and take a mindful pause.", effortDurationSec: 60 },
+  { key: "eatafruit", icon: "nutrition", name: "Eat a fruit", effortLabel: "5 min", verify: "Self Report", color: C.orange, bg: C.orangeLight, category: "micro" as ActivityCategory, instructions: "Eat a piece of fruit mindfully.", effortDurationSec: 300 },
+  { key: "sweepfloor", icon: "cleaning-services", name: "Sweep floor", effortLabel: "10 min", verify: "Self Report", color: C.sky, bg: C.skyLight, category: "micro" as ActivityCategory, instructions: "Sweep one area of the floor.", effortDurationSec: 600 },
+  { key: "newsong", icon: "music-note", name: "New song", effortLabel: "10 min", verify: "Self Report", color: C.purple, bg: C.purpleLight, category: "micro" as ActivityCategory, instructions: "Listen to a song you have not heard before.", effortDurationSec: 600 },
+  { key: "takephoto", icon: "photo-camera", name: "Take a photo", effortLabel: "1 min", verify: "Self Report", color: C.rose, bg: C.roseLight, category: "micro" as ActivityCategory, instructions: "Take one photo of something interesting around you.", effortDurationSec: 60 },
+  { key: "grocerylist", icon: "shopping-cart", name: "Grocery list", effortLabel: "5 min", verify: "Self Report", color: C.teal, bg: C.tealLight, category: "micro" as ActivityCategory, instructions: "Write or update your grocery list.", effortDurationSec: 300 },
+  { key: "planmenu", icon: "restaurant-menu", name: "Plan menu", effortLabel: "5 min", verify: "Self Report", color: C.amber, bg: C.amberLight, category: "micro" as ActivityCategory, instructions: "Plan a simple menu for the day or week.", effortDurationSec: 300 },
+  { key: "eyegymnastics", icon: "visibility", name: "Eye gymnastics", effortLabel: "1 min", verify: "Guided", color: C.sky, bg: C.skyLight, category: "anti-scroll" as ActivityCategory, instructions: "Move your eyes slowly through a few directions.", effortDurationSec: 60 },
+  { key: "eyemassage", icon: "visibility", name: "Eye massage", effortLabel: "5 min", verify: "Timer", color: C.purple, bg: C.purpleLight, category: "anti-scroll" as ActivityCategory, instructions: "Gently massage around your closed eyes.", effortDurationSec: 300 },
+  { key: "callafriend", icon: "call", name: "Call a friend", effortLabel: "1 min", verify: "Self Report", color: C.mint, bg: C.mintLight, category: "anti-scroll" as ActivityCategory, instructions: "Call someone you care about.", effortDurationSec: 60 },
+  { key: "doodle", icon: "draw", name: "Doodle", effortLabel: "5 min", verify: "Self Report", color: C.electricYellow, bg: C.electricYellowLight, category: "anti-scroll" as ActivityCategory, instructions: "Doodle freely on paper for five minutes.", effortDurationSec: 300 },
+  { key: "reflectday", icon: "history-edu", name: "Reflect on your day", effortLabel: "1 min", verify: "Self Report", color: C.rose, bg: C.roseLight, category: "anti-scroll" as ActivityCategory, instructions: "Think about one good moment from today.", effortDurationSec: 60 },
+  { key: "questionday", icon: "help-outline", name: "Question of the day", effortLabel: "1 min", verify: "Self Report", color: C.orange, bg: C.orangeLight, category: "anti-scroll" as ActivityCategory, instructions: "Answer: what made you smile or brought you joy today?", effortDurationSec: 60 },
+  { key: "findcolor", icon: "palette", name: "Find a color", effortLabel: "1 min", verify: "Self Report", color: C.indigo, bg: C.indigoLight, category: "anti-scroll" as ActivityCategory, instructions: "Look around and find something in a chosen color.", effortDurationSec: 60 },
+].map((activity) => ({
+  ...activity,
+  icon: activity.icon as MaterialIconName,
+  verificationMethod: activity.verify === "Timer"
+    ? "timer" as const
+    : activity.verify === "Guided"
+      ? "guided" as const
+      : "self-report" as const,
+  dp: 10,
+  minutes: 3,
+  limit: "3x Daily",
+}));
+
+const ACTIVITIES = [...BASE_ACTIVITIES, ...FIGMA_ACTIVITIES];
 
 type ActivityItem = (typeof ACTIVITIES)[number];
 const REFLECTIVE_ACTIVITY_KEYS = new Set([
@@ -765,14 +659,10 @@ const REFLECTIVE_ACTIVITY_KEYS = new Set([
   "kindact",
   "mindfulwalk",
   "planday",
-  "phonebed",
-  "clean",
-  "instrument",
-  "study",
-  "read",
-  "cookmeal",
-  "grayscale",
-  "scrollreset",
+  "readapage",
+  "cleanmirror",
+  "newsong",
+  "questionday",
 ]);
 
 type MapNodeDef = {
@@ -788,13 +678,13 @@ const FITNESS_FOUNDATION: Record<MovementLevelKey, MapNodeDef[]> = {
   beginner: [
     { label: "Easy Walk", activityKeys: ["run"], dp: 30, nodeType: "regular", desc: "Walk 300m to warm up" },
     { label: "First Push", activityKeys: ["pushups"], dp: 20, nodeType: "regular", desc: "5 push-ups" },
-    { label: "Stretch Break", activityKeys: ["stretch"], dp: 15, nodeType: "rest", desc: "15 sec full body stretch" },
-    { label: "Short Shuffle", activityKeys: ["run"], dp: 28, nodeType: "regular", desc: "Easy jog or brisk walk 200m" },
+    { label: "Core Start", activityKeys: ["crunches"], dp: 15, nodeType: "rest", desc: "10 controlled crunches" },
+    { label: "Glute Base", activityKeys: ["glutebridge"], dp: 28, nodeType: "regular", desc: "10 glute bridges" },
     { label: "Runner's Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-    { label: "Hydrate & Breathe", activityKeys: ["water", "breathe"], dp: 25, nodeType: "regular", desc: "Drink water + 2 min breathwork" },
-    { label: "Neighborhood Walk", activityKeys: ["run"], dp: 45, nodeType: "regular", desc: "Walk 400m" },
-    { label: "Squat Set", activityKeys: ["squats"], dp: 25, nodeType: "regular", desc: "10 squats" },
-    { label: "Cool-down Lap", activityKeys: ["run", "stretch"], dp: 40, nodeType: "regular", desc: "Walk 300m + stretch" },
+    { label: "Power Cardio", activityKeys: ["mountainclimber", "highkneerun"], dp: 25, nodeType: "regular", desc: "Mountain climbers + high knees" },
+    { label: "Strength Flow", activityKeys: ["sumosquats", "lunges"], dp: 45, nodeType: "regular", desc: "Sumo squats + lunges" },
+    { label: "Balance Hold", activityKeys: ["forearmplank", "sideplank"], dp: 25, nodeType: "regular", desc: "Forearm plank + side plank" },
+    { label: "Mobility Finish", activityKeys: ["legstretch", "forwardfold"], dp: 40, nodeType: "regular", desc: "Leg stretch + forward fold" },
     { label: "Boss: Foundation", activityKeys: ["run", "pushups", "squats"], dp: 200, nodeType: "boss", desc: "Walk 400m + 5 push-ups + 10 squats" },
   ],
   decent: [
@@ -803,11 +693,11 @@ const FITNESS_FOUNDATION: Record<MovementLevelKey, MapNodeDef[]> = {
     { label: "Tempo Legs", activityKeys: ["squats"], dp: 32, nodeType: "regular", desc: "15 squats" },
     { label: "Steady K", activityKeys: ["run"], dp: 55, nodeType: "regular", desc: "Run or run/walk 1 km" },
     { label: "Runner's Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-    { label: "Power Cardio", activityKeys: ["jumpingjacks", "plank"], dp: 45, nodeType: "regular", desc: "20 jumping jacks + 20s plank" },
-    { label: "Distance Builder", activityKeys: ["run"], dp: 70, nodeType: "regular", desc: "Cover 1.5 km your pace" },
-    { label: "Wall & Recover", activityKeys: ["wallsit", "water"], dp: 30, nodeType: "regular", desc: "Wall sit 20s + hydrate" },
-    { label: "Interval Mix", activityKeys: ["run", "breathe"], dp: 50, nodeType: "regular", desc: "800m + 3 min breathwork" },
-    { label: "Boss: Runner's Test", activityKeys: ["run", "pushups", "squats"], dp: 220, nodeType: "boss", desc: "1 km + 10 push-ups + 15 squats" },
+    { label: "Power Cardio", activityKeys: ["jumpingjacks", "mountainclimber"], dp: 45, nodeType: "regular", desc: "Jumping jacks + mountain climbers" },
+    { label: "Core Builder", activityKeys: ["bicyclecrunches", "scissorkicks"], dp: 70, nodeType: "regular", desc: "Bicycle crunches + scissors kicks" },
+    { label: "Lateral Strength", activityKeys: ["lunges", "sidelunges"], dp: 30, nodeType: "regular", desc: "Lunges + side lunges" },
+    { label: "Mobility Flow", activityKeys: ["legstretch", "sidestretch"], dp: 50, nodeType: "regular", desc: "Leg stretch + side stretch" },
+    { label: "Boss: Runner's Test", activityKeys: ["run", "pushups", "squats", "forearmplank"], dp: 220, nodeType: "boss", desc: "1 km + push-ups + squats + plank" },
   ],
 };
 
@@ -817,48 +707,59 @@ const PERSONA_MAP_SECTIONS: Record<PersonaKey, Record<string, MapNodeDef[]>> = {
   focus: {
     foundation: [
       { label: "Screen Reset", activityKeys: ["eyesclosed"], dp: 15, nodeType: "regular", desc: "Close eyes for 10 sec" },
-      { label: "Focus Breath", activityKeys: ["breathe"], dp: 20, nodeType: "regular", desc: "3 min breathwork" },
-      { label: "Quick Push", activityKeys: ["pushups"], dp: 20, nodeType: "rest", desc: "5 push-ups to reset" },
+      { label: "Box Breathing", activityKeys: ["boxbreathing"], dp: 20, nodeType: "regular", desc: "5 min box breathing" },
+      { label: "Eye Reset", activityKeys: ["eyegymnastics"], dp: 20, nodeType: "rest", desc: "Eye gymnastics to reset your attention" },
       { label: "Attention Test", activityKeys: ["focusdot"], dp: 15, nodeType: "regular", desc: "Focus dot challenge" },
       { label: "Shield Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-      { label: "Break & Breathe", activityKeys: ["leaveroom", "breathe"], dp: 30, nodeType: "regular", desc: "Leave the room + breathwork" },
-      { label: "Mindful Move", activityKeys: ["stretch", "eyesclosed"], dp: 25, nodeType: "regular", desc: "Stretch + eyes closed" },
-      { label: "Gratitude Pause", activityKeys: ["gratitude"], dp: 15, nodeType: "regular", desc: "Write 3 things you're grateful for" },
-      { label: "Deep Focus", activityKeys: ["focusdot", "breathe"], dp: 30, nodeType: "regular", desc: "Focus dot + 3 min breathwork" },
-      { label: "Boss: Digital Detox", activityKeys: ["eyesclosed", "leaveroom", "breathe"], dp: 200, nodeType: "boss", desc: "Eyes closed + leave room + breathe" },
+      { label: "Window Grounding", activityKeys: ["windowobserve", "grounding"], dp: 30, nodeType: "regular", desc: "Observe outside + ground in the present" },
+      { label: "Face & Body Reset", activityKeys: ["facemassage", "selfhugging"], dp: 25, nodeType: "regular", desc: "Face massage + self-hug" },
+      { label: "Doodle Break", activityKeys: ["doodle"], dp: 15, nodeType: "regular", desc: "Doodle instead of scrolling" },
+      { label: "Daily Reflection", activityKeys: ["reflectday", "questionday"], dp: 30, nodeType: "regular", desc: "Reflect on the day + answer a question" },
+      { label: "Boss: Digital Detox", activityKeys: ["eyesclosed", "leaveroom", "callafriend"], dp: 200, nodeType: "boss", desc: "Eyes closed + leave room + call a friend" },
     ],
   },
   discipline: {
     foundation: [
-      { label: "First Rep", activityKeys: ["pushups"], dp: 20, nodeType: "regular", desc: "10 push-ups" },
-      { label: "Make the Plan", activityKeys: ["planday"], dp: 15, nodeType: "regular", desc: "Write your #1 task" },
-      { label: "Hydrate", activityKeys: ["water"], dp: 10, nodeType: "rest", desc: "Drink a glass of water" },
-      { label: "Squat Set", activityKeys: ["squats"], dp: 30, nodeType: "regular", desc: "15 squats" },
+      { label: "Light a Candle", activityKeys: ["lightcandle"], dp: 20, nodeType: "regular", desc: "Light a candle and pause" },
+      { label: "Read a Page", activityKeys: ["readapage"], dp: 15, nodeType: "regular", desc: "Read one page" },
+      { label: "Make the Plan", activityKeys: ["planday"], dp: 10, nodeType: "rest", desc: "Write your #1 task" },
+      { label: "Eat a Fruit", activityKeys: ["eatafruit"], dp: 30, nodeType: "regular", desc: "Eat one piece of fruit" },
       { label: "Discipline Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-      { label: "Full Stack", activityKeys: ["pushups", "squats"], dp: 50, nodeType: "regular", desc: "10 push-ups + 15 squats" },
-      { label: "Walk & Plan", activityKeys: ["run", "planday"], dp: 40, nodeType: "regular", desc: "Walk 300m + plan your day" },
-      { label: "Hold the Line", activityKeys: ["plank", "wallsit"], dp: 50, nodeType: "regular", desc: "Plank 20s + wall sit 20s" },
-      { label: "Kind & Strong", activityKeys: ["kindact", "jumpingjacks"], dp: 35, nodeType: "regular", desc: "Do a kind act + 20 jumping jacks" },
-      { label: "Boss: Iron Routine", activityKeys: ["pushups", "squats", "plank", "water"], dp: 200, nodeType: "boss", desc: "Push-ups + squats + plank + hydrate" },
+      { label: "Declutter Drawer", activityKeys: ["declutterdrawer"], dp: 50, nodeType: "regular", desc: "Clear one drawer" },
+      { label: "Grocery List", activityKeys: ["grocerylist"], dp: 40, nodeType: "regular", desc: "Write your grocery list" },
+      { label: "Plan Menu", activityKeys: ["planmenu"], dp: 50, nodeType: "regular", desc: "Plan a simple menu" },
+      { label: "Clean & Sweep", activityKeys: ["cleanmirror", "sweepfloor"], dp: 35, nodeType: "regular", desc: "Clean a mirror + sweep the floor" },
+      { label: "Boss: Daily Reset", activityKeys: ["planday", "grocerylist", "planmenu", "kindact"], dp: 200, nodeType: "boss", desc: "Plan your day + groceries + menu + kind act" },
     ],
   },
   calm: {
     foundation: [
       { label: "First Breath", activityKeys: ["breathe"], dp: 20, nodeType: "regular", desc: "3 min breathwork" },
       { label: "Grateful Heart", activityKeys: ["gratitude"], dp: 15, nodeType: "regular", desc: "Write 3 things you're grateful for" },
-      { label: "Gentle Stretch", activityKeys: ["stretch"], dp: 15, nodeType: "rest", desc: "15 sec stretch" },
+      { label: "Box Breathing", activityKeys: ["boxbreathing"], dp: 15, nodeType: "rest", desc: "5 min box breathing" },
       { label: "Screen Pause", activityKeys: ["eyesclosed", "leaveroom"], dp: 20, nodeType: "regular", desc: "Eyes closed + leave the room" },
       { label: "Calm Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-      { label: "Kindness Walk", activityKeys: ["kindact", "run"], dp: 40, nodeType: "regular", desc: "Do a kind act + walk 300m" },
-      { label: "Focus Flow", activityKeys: ["focusdot", "breathe"], dp: 25, nodeType: "regular", desc: "Focus dot + breathwork" },
-      { label: "Body Calm", activityKeys: ["stretch", "water"], dp: 20, nodeType: "regular", desc: "Stretch + drink water" },
-      { label: "Deep Gratitude", activityKeys: ["gratitude", "breathe"], dp: 30, nodeType: "regular", desc: "Gratitude + breathwork" },
-      { label: "Boss: Inner Peace", activityKeys: ["breathe", "gratitude", "stretch", "eyesclosed"], dp: 200, nodeType: "boss", desc: "Breathwork + gratitude + stretch + eyes closed" },
+      { label: "Grounding Walk", activityKeys: ["grounding", "mindfulwalk"], dp: 40, nodeType: "regular", desc: "Grounding + mindful walk" },
+      { label: "Smile & Self-Hug", activityKeys: ["smile", "selfhugging"], dp: 25, nodeType: "regular", desc: "Smile + self-hug" },
+      { label: "Goals & Affirmations", activityKeys: ["visualizegoals", "positiveaffirmations"], dp: 20, nodeType: "regular", desc: "Visualize goals + affirmations" },
+      { label: "Hum & Tap", activityKeys: ["humsinging", "bodytap"], dp: 30, nodeType: "regular", desc: "Hum + body tap" },
+      { label: "Boss: Inner Peace", activityKeys: ["breathe", "gratitude", "grounding", "boxbreathing"], dp: 200, nodeType: "boss", desc: "Breathwork + gratitude + grounding + box breathing" },
     ],
   },
 };
 
 const ACTIVITY_LOOKUP = Object.fromEntries(ACTIVITIES.map((a) => [a.key, a]));
+const ACTIVITY_KEY_ALIASES: Record<string, string> = {
+  plank: "forearmplank",
+  stretch: "legstretch",
+};
+
+const FAST_UNLOCK_ACTIVITY_KEYS: Record<PersonaKey, string[]> = {
+  focus: ["water", "kindact", "planday"],
+  fitness: ["water", "smile", "gratitude"],
+  discipline: ["water", "eyesclosed", "gratitude"],
+  calm: ["water", "planday", "kindact"],
+};
 
 const PHASE_DP_MULT = [1, 1.3, 1.6] as const;
 const PHASE_NAMES = ["Foundation", "Building", "Mastery"] as const;
@@ -1557,6 +1458,7 @@ export default function HomeScreen() {
   const [activeCoinRun, setActiveCoinRun] = useState(false);
   const [giftItemId, setGiftItemId] = useState<string | null>(null);
   const [addFriendModalOpen, setAddFriendModalOpen] = useState(false);
+  const [socialReferralSpotlightOpen, setSocialReferralSpotlightOpen] = useState(false);
   const [friendCodeInput, setFriendCodeInput] = useState("");
   const [selectedLbUser, setSelectedLbUser] = useState<{ userId: string; name: string; title: string; dp: string; persona?: string; difficultyLevel?: string; equippedSkin?: string; avatarUrl?: string } | null>(null);
   const [giftTargetUserId, setGiftTargetUserId] = useState<string | null>(null);
@@ -1577,6 +1479,11 @@ export default function HomeScreen() {
     dailyQuestCompleted: boolean;
     completedNodeLabel?: string;
     nodeDp: number;
+    currentStreak: number;
+    isFirstActivity: boolean;
+    referralActivated: boolean;
+    referralBonusCoins: number;
+    referralBonusFreezes: number;
   } | null>(null);
 
   // iOS Screen Time state
@@ -1597,6 +1504,7 @@ export default function HomeScreen() {
   const [profileDraftName, setProfileDraftName] = useState("");
   const [profileDraftGoal, setProfileDraftGoal] = useState("");
   const [profileSaving, setProfileSaving] = useState(false);
+  const [infoModal, setInfoModal] = useState<{ title: string; body: string } | null>(null);
 
   const isTodayScreen = screen === "today";
   const isSocialScreen = screen === "social";
@@ -1618,10 +1526,6 @@ export default function HomeScreen() {
   const todayCounts = useQuery(
     api.activities.getTodayCounts,
     isAuthenticated ? {} : "skip"
-  );
-  const todaySummary = useQuery(
-    api.activities.getTodaySummary,
-    isAuthenticated && isTodayScreen ? {} : "skip"
   );
   const mapProgress = useQuery(
     api.training.getMapProgress,
@@ -1706,9 +1610,91 @@ export default function HomeScreen() {
   const acceptFriend = useMutation(api.social.acceptFriend);
   const rejectFriend = useMutation(api.social.rejectFriend);
   const sendFriendRequest = useMutation(api.social.sendFriendRequest);
+  const trackGrowthEvent = useMutation(api.growth.trackClientEvent);
+  const markReviewPrompted = useMutation(api.growth.markReviewPrompted);
+  const markSocialReferralIntroSeen = useMutation(api.growth.markSocialReferralIntroSeen);
+  const recordGrowthEvent = useCallback(
+    async (
+      eventName: string,
+      properties?: {
+        activityType?: string;
+        screen?: string;
+        milestone?: string;
+        shareType?: string;
+        currentStreak?: number;
+        minutesEarned?: number;
+        value?: number;
+        success?: boolean;
+      },
+    ) => {
+      try {
+        await trackGrowthEvent({ name: eventName, properties });
+      } catch (error) {
+        console.warn(`[Growth] Could not record ${eventName}:`, error);
+      }
+    },
+    [trackGrowthEvent],
+  );
 
   const canSyncFreezesRef = useRef(false);
   const mapExpansionRequestedRef = useRef(false);
+  const socialReferralSpotlightProfileRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!isAuthenticated || (screen !== "upgrade" && screen !== "finalPaywall")) {
+      return;
+    }
+    void recordGrowthEvent("paywall_viewed", { screen });
+  }, [isAuthenticated, recordGrowthEvent, screen]);
+
+  useEffect(() => {
+    if (
+      !isAuthenticated ||
+      !isSocialScreen ||
+      !profile?._id ||
+      profile.socialReferralIntroSeenAt ||
+      socialReferralSpotlightProfileRef.current === String(profile._id)
+    ) {
+      return;
+    }
+    socialReferralSpotlightProfileRef.current = String(profile._id);
+    setSocialReferralSpotlightOpen(true);
+  }, [isAuthenticated, isSocialScreen, profile?._id, profile?.socialReferralIntroSeenAt]);
+
+  const dismissSocialReferralSpotlight = useCallback(async () => {
+    setSocialReferralSpotlightOpen(false);
+    try {
+      await markSocialReferralIntroSeen({});
+    } catch (error) {
+      console.warn("[Growth] Could not mark referral spotlight as seen:", error);
+    }
+  }, [markSocialReferralIntroSeen]);
+
+  const shareReferralInvite = useCallback(async () => {
+    try {
+      const code = myFriendCode ?? await generateFriendCode();
+      if (!code) return;
+      await recordGrowthEvent("referral_share_started", {
+        screen: "social",
+        shareType: "native_share_sheet",
+        value: 100,
+      });
+      const result = await Share.share({
+        message: `I’m using Volt to turn healthy actions into screen time. Join me with code ${code}. Complete your first activity and we’ll both get 100 coins plus a Lazy Pass.`,
+      });
+      await recordGrowthEvent("referral_share_completed", {
+        screen: "social",
+        shareType: "native_share_sheet",
+        value: 100,
+        success: result.action === Share.sharedAction,
+      });
+    } catch (error) {
+      Alert.alert(
+        "Could not share",
+        error instanceof Error ? error.message : "Try again.",
+      );
+    }
+  }, [generateFriendCode, myFriendCode, recordGrowthEvent]);
+
   useEffect(() => {
     canSyncFreezesRef.current = Boolean(isAuthenticated && profile?._id);
   }, [isAuthenticated, profile?._id]);
@@ -1787,11 +1773,12 @@ export default function HomeScreen() {
       !profile?.onboardingComplete ||
       !profile.persona ||
       mapProgress === undefined ||
-      mapProgress.length >= 30 ||
       mapExpansionRequestedRef.current
     ) return;
 
     mapExpansionRequestedRef.current = true;
+    // Re-sync the current map definition once per session so existing users
+    // receive updated persona activities while keeping their progress.
     void generateMap({
       persona: profile.persona,
       ...(profile.persona === "fitness" && profile.movementLevel
@@ -2382,6 +2369,71 @@ export default function HomeScreen() {
     return result;
   }, [logActivity]);
 
+  const shareLatestAchievement = useCallback(async () => {
+    if (!rewardCelebration) return;
+    const milestone = rewardCelebration.completedNodeLabel
+      ? "training_node"
+      : rewardCelebration.dailyQuestCompleted
+        ? "daily_mission"
+        : rewardCelebration.isFirstActivity
+          ? "first_activity"
+          : "activity";
+    const streakLine =
+      rewardCelebration.currentStreak > 1
+        ? ` I’m on a ${rewardCelebration.currentStreak}-day streak.`
+        : "";
+    const message = `I just turned ${rewardCelebration.activityName.toLowerCase()} into ${rewardCelebration.minutesEarned} minutes of screen time with Volt.${streakLine} Move. Earn. Unlock.`;
+
+    try {
+      await recordGrowthEvent("achievement_share_started", {
+        activityType: rewardCelebration.activityName,
+        milestone,
+        shareType: "native_share_sheet",
+        currentStreak: rewardCelebration.currentStreak,
+        minutesEarned: rewardCelebration.minutesEarned,
+      });
+      const result = await Share.share({ message });
+      await recordGrowthEvent("achievement_share_completed", {
+        activityType: rewardCelebration.activityName,
+        milestone,
+        shareType: "native_share_sheet",
+        currentStreak: rewardCelebration.currentStreak,
+        minutesEarned: rewardCelebration.minutesEarned,
+        success: result.action === Share.sharedAction,
+      });
+    } catch (error) {
+      Alert.alert(
+        "Could not share",
+        error instanceof Error ? error.message : "Try again.",
+      );
+    }
+  }, [recordGrowthEvent, rewardCelebration]);
+
+  const requestMilestoneReview = useCallback(async () => {
+    if (!rewardCelebration) return;
+    const milestone = rewardCelebration.completedNodeLabel
+      ? "training_node_completed"
+      : rewardCelebration.dailyQuestCompleted
+        ? "daily_mission_completed"
+        : `streak_${rewardCelebration.currentStreak}`;
+    try {
+      if (!(await StoreReview.isAvailableAsync())) {
+        Alert.alert(
+          "Rating unavailable",
+          "The store rating prompt is available in an installed App Store or Play Store build.",
+        );
+        return;
+      }
+      const shouldPrompt = await markReviewPrompted({
+        milestone,
+        currentStreak: rewardCelebration.currentStreak,
+      });
+      if (shouldPrompt) await StoreReview.requestReview();
+    } catch (error) {
+      console.warn("[StoreReview] Could not request a rating:", error);
+    }
+  }, [markReviewPrompted, rewardCelebration]);
+
   const handleAuth = useCallback(async () => {
     if (authSubmitting) return;
     setAuthSubmitting(true);
@@ -2715,8 +2767,17 @@ export default function HomeScreen() {
   const handlePurchasedPackage = useCallback(async (pkg: PurchasesPackage) => {
     try {
       setPurchasing(true);
+      await recordGrowthEvent("purchase_started", {
+        screen,
+        milestone: pkg.identifier,
+      });
       const result = await purchasePackage(pkg);
       if (result.success) {
+        await recordGrowthEvent("purchase_completed", {
+          screen,
+          milestone: pkg.identifier,
+          success: true,
+        });
         setIsPro(true);
         setSubscriptionExpired(false);
         const period = result.customerInfo
@@ -2728,14 +2789,24 @@ export default function HomeScreen() {
         }
         await handleCompleteOnboarding();
       } else if (result.error) {
+        await recordGrowthEvent("purchase_failed", {
+          screen,
+          milestone: pkg.identifier,
+          success: false,
+        });
         Alert.alert("Purchase Error", result.error);
       }
     } catch (e) {
+      void recordGrowthEvent("purchase_failed", {
+        screen,
+        milestone: pkg.identifier,
+        success: false,
+      });
       Alert.alert("Account setup error", e instanceof Error ? e.message : "Your purchase succeeded, but we could not finish setting up your account.");
     } finally {
       setPurchasing(false);
     }
-  }, [handleCompleteOnboarding, syncStreakFreezeAllowance]);
+  }, [handleCompleteOnboarding, recordGrowthEvent, screen, syncStreakFreezeAllowance]);
 
   const handlePurchase = useCallback(async () => {
     const target = PACKAGE_IDENTIFIER_BY_PERIOD[selectedPlan];
@@ -2939,7 +3010,8 @@ export default function HomeScreen() {
         .sort((a, b) => a.nodeId - b.nodeId)
         .map((n) => {
           const fallback = personaSection[n.nodeId - 1];
-          const actKeys: string[] = n.activityKeys ?? fallback?.activityKeys ?? [];
+          const actKeys: string[] = (n.activityKeys ?? fallback?.activityKeys ?? [])
+            .map((key) => ACTIVITY_KEY_ALIASES[key] ?? key);
           const firstAct = actKeys.length > 0 ? ACTIVITY_LOOKUP[actKeys[0]] : undefined;
           const nType = n.nodeType ?? fallback?.nodeType ?? "regular";
           const icon: MaterialIconName =
@@ -2952,7 +3024,8 @@ export default function HomeScreen() {
             reward: `+${n.dp ?? fallback?.dp ?? 20} VP`,
             activity: n.desc ?? fallback?.desc ?? "Complete the challenge",
             activityKeys: actKeys,
-            completedActivityKeys: n.completedActivityKeys ?? [],
+            completedActivityKeys: (n.completedActivityKeys ?? [])
+              .map((key) => ACTIVITY_KEY_ALIASES[key] ?? key),
             nodeType: nType,
           };
         });
@@ -3024,31 +3097,20 @@ export default function HomeScreen() {
     [mapNodes],
   );
   const recommendedActivities = useMemo(() => {
-    const personaActivityKeys: Record<PersonaKey, string[]> = {
-      focus: ["scrollreset", "eyesclosed", "focusdot", "breathe", "leaveroom"],
-      fitness: ["run", "pushups", "squats", "stretch", "water"],
-      discipline: ["planday", "study", "clean", "read", "water"],
-      calm: ["breathe", "bodyscan", "gratitude", "mindfulwalk", "eyesclosed"],
-    };
-    const nextTrainingKey = currentTrainingNode?.activityKeys.find(
-      (key: string) => !currentTrainingNode.completedActivityKeys.includes(key),
-    );
-    return Array.from(new Set([
-      nextTrainingKey,
-      ...personaActivityKeys[profilePersona],
-    ].filter(Boolean) as string[]))
+    return FAST_UNLOCK_ACTIVITY_KEYS[profilePersona]
       .map((key) => ACTIVITY_LOOKUP[key])
       .filter(Boolean)
       .slice(0, 3) as ActivityItem[];
-  }, [currentTrainingNode, profilePersona]);
+  }, [profilePersona]);
 
-  const renderActivityCard = (act: ActivityItem) => {
+  const renderActivityCard = (act: ActivityItem, options?: { catalogLocked?: boolean }) => {
+    const catalogLocked = options?.catalogLocked ?? false;
     const reward = previewReward(act.key);
     const limit = ACTIVITY_RULES[act.key]?.dailyLimit;
     const used = (todayCounts as Record<string, number> | undefined)?.[act.key] ?? 0;
     const capped = limit !== undefined && used >= limit;
     return (
-      <View key={act.key} style={[s.unlockCard, capped && { opacity: 0.5 }]}>
+      <View key={act.key} style={[s.unlockCard, capped && { opacity: 0.5 }, catalogLocked && s.unlockCardLocked]}>
         <View style={[s.unlockIconCircle, { backgroundColor: act.color }]}>
           {act.key === "pushups" ? (
             <SvgXml xml={HYE_ICON_PUSHUPS_XML} width={32} height={32} />
@@ -3071,7 +3133,7 @@ export default function HomeScreen() {
           </View>
           <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
             <Text style={s.unlockFormula} numberOfLines={1}>
-              {act.key === "run" ? gpsSessionUi.formula : (
+              {catalogLocked ? "Available from Home or Train" : act.key === "run" ? gpsSessionUi.formula : (
                 <>
                   {scaledEffortLabel(act)} ={" "}
                   <Text style={{ color: C.hotPink }}>{reward.minutes} min</Text>
@@ -3079,14 +3141,30 @@ export default function HomeScreen() {
                 </>
               )}
             </Text>
-            <Pressable style={s.goBtn} onPress={() => !capped && handleLogActivity(act)} disabled={capped}>
-              <Text style={s.goBtnText}>{capped ? "DONE" : "START"}</Text>
+            <Pressable
+              style={[s.goBtn, catalogLocked && s.goBtnLocked]}
+              onPress={() => { if (!catalogLocked && !capped) void handleLogActivity(act); }}
+              disabled={capped || catalogLocked}
+              accessibilityRole="button"
+              accessibilityState={{ disabled: capped || catalogLocked }}
+              accessibilityLabel={catalogLocked ? `${act.name} locked` : `${act.name} ${capped ? "complete" : "start"}`}
+            >
+              <MaterialIcons name={catalogLocked ? "lock" : capped ? "check" : "play-arrow"} size={14} color={catalogLocked ? C.mutedFg : C.black} />
+              <Text style={[s.goBtnText, catalogLocked && s.goBtnTextLocked]}>{catalogLocked ? "LOCKED" : capped ? "DONE" : "START"}</Text>
             </Pressable>
           </View>
         </View>
       </View>
     );
   };
+
+  const canAskForReview = Boolean(
+    !profile?.reviewPromptedAt &&
+      rewardCelebration &&
+      (rewardCelebration.dailyQuestCompleted ||
+        rewardCelebration.completedNodeLabel ||
+        rewardCelebration.currentStreak >= 3),
+  );
 
   const rewardCelebrationModal = (
     <Modal
@@ -3114,8 +3192,57 @@ export default function HomeScreen() {
               30-day path: {rewardCelebration.completedNodeLabel} · +{rewardCelebration.nodeDp} VP
             </Text>
           ) : null}
+          {rewardCelebration?.referralActivated ? (
+            <Text style={s.rewardReferralBonus}>
+              Referral activated · +{rewardCelebration.referralBonusCoins} coins · +{rewardCelebration.referralBonusFreezes} Lazy Pass
+            </Text>
+          ) : null}
+          <Pressable
+            style={s.rewardShareCta}
+            onPress={() => void shareLatestAchievement()}
+            accessibilityRole="button"
+            accessibilityLabel="Share this Volt achievement"
+          >
+            <MaterialIcons name="share" size={18} color={C.black} />
+            <Text style={s.rewardShareCtaText}>SHARE THIS WIN</Text>
+          </Pressable>
+          {canAskForReview ? (
+            <Pressable
+              style={s.rewardReviewCta}
+              onPress={() => void requestMilestoneReview()}
+              accessibilityRole="button"
+              accessibilityLabel="Rate Volt in the app store"
+            >
+              <MaterialIcons name="star-rate" size={18} color={C.coinDarkYellow} />
+              <Text style={s.rewardReviewCtaText}>ENJOYING VOLT? RATE IT</Text>
+            </Pressable>
+          ) : null}
           <Pressable style={s.rewardCta} onPress={() => setRewardCelebration(null)}>
             <Text style={s.rewardCtaText}>KEEP GOING</Text>
+          </Pressable>
+        </View>
+      </View>
+    </Modal>
+  );
+
+  const appInfoModal = (
+    <Modal
+      visible={infoModal !== null}
+      transparent
+      animationType="slide"
+      onRequestClose={() => setInfoModal(null)}
+    >
+      <View style={s.infoModalOverlay}>
+        <Pressable style={s.infoModalBackdrop} onPress={() => setInfoModal(null)} />
+        <View style={[s.infoModalCard, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]}>
+          <View style={s.infoModalHandle} />
+          <View style={s.infoModalIcon}>
+            <MaterialIcons name="info-outline" size={26} color={C.black} />
+          </View>
+          <Text style={s.infoModalTitle}>{infoModal?.title}</Text>
+          <Text style={s.infoModalBody}>{infoModal?.body}</Text>
+          <Pressable style={s.infoModalCta} onPress={() => setInfoModal(null)}>
+            <Text style={s.infoModalCtaText}>GOT IT</Text>
           </Pressable>
         </View>
       </View>
@@ -4954,7 +5081,7 @@ export default function HomeScreen() {
             <View style={s.flex1}>
               <Text style={s.headerTitle}>All Activities</Text>
               <Text style={{ fontSize: 12, fontWeight: "700", color: C.mutedFg }}>
-                26 ways to earn fuel · effort scales with {profileDifficulty} mode
+                Browse {ACTIVITIES.length} activities · start them from Fast Unlocks or Train
               </Text>
             </View>
           </View>
@@ -4967,7 +5094,7 @@ export default function HomeScreen() {
                   <MaterialIcons name={meta.icon} size={16} color={C.mutedFg} />
                   <Text style={s.catHeaderText}>{meta.label}</Text>
                 </View>
-                <View style={s.fastUnlockGroup}>{activities.map(renderActivityCard)}</View>
+                <View style={s.fastUnlockGroup}>{activities.map((act) => renderActivityCard(act, { catalogLocked: true }))}</View>
               </View>
             );
           })}
@@ -4983,6 +5110,7 @@ export default function HomeScreen() {
       <View style={s.screenBg}>
         <StatusBar style="dark" />
         {rewardCelebrationModal}
+        {appInfoModal}
 
         {/* VP Claim popup */}
         <Modal visible={showVpClaim} transparent animationType="fade" onRequestClose={() => setShowVpClaim(false)}>
@@ -5099,20 +5227,6 @@ export default function HomeScreen() {
             </Pressable>
           </View>
 
-          <View style={s.dailyMissionCard}>
-            <View style={s.dailyMissionIcon}><Text style={{ fontSize: 24 }}>🎯</Text></View>
-            <View style={s.flex1}>
-              <Text style={s.dailyMissionTitle}>Daily mission</Text>
-              <Text style={s.dailyMissionSub}>
-                Complete 3 activities · reward 10 coins
-              </Text>
-              <View style={s.dailyMissionTrack}>
-                <View style={[s.dailyMissionFill, { width: `${Math.min(100, ((todaySummary?.missionCount ?? 0) / 3) * 100)}%` }]} />
-              </View>
-            </View>
-            <Text style={s.dailyMissionCount}>{todaySummary?.missionCount ?? 0}/3</Text>
-          </View>
-
           {currentTrainingNode ? (
             <Pressable style={s.pathMissionCard} onPress={() => { setSelectedNode(currentTrainingNode.id); tabPress("train"); }}>
               <Text style={s.pathMissionBadge}>DAY {Math.min(30, currentTrainingNode.id)}</Text>
@@ -5127,12 +5241,12 @@ export default function HomeScreen() {
           ) : null}
 
           <View style={s.sectionHeaderRow}>
-            <Text style={s.sectionTitle}>Recommended for you</Text>
+            <Text style={s.sectionTitle}>Fast unlocks</Text>
             <Pressable onPress={() => goTo("activities")}>
-              <Text style={s.sectionLink}>See all 26</Text>
+              <Text style={s.sectionLink}>See all {ACTIVITIES.length}</Text>
             </Pressable>
           </View>
-          <View style={s.fastUnlockGroup}>{recommendedActivities.map(renderActivityCard)}</View>
+          <View style={s.fastUnlockGroup}>{recommendedActivities.map((act) => renderActivityCard(act))}</View>
 
           <Pressable style={s.learningCentreCard} onPress={() => goTo("learningCentre")}>
             <View style={s.learningCentreIconWrap}>
@@ -5162,12 +5276,12 @@ export default function HomeScreen() {
               <Pressable
                 style={s.lazyPassRefillBtn}
                 onPress={() =>
-                  Alert.alert(
-                    "Lazy pass",
-                    billingPeriod === "weekly"
-                      ? "You get 1 lazy pass each calendar week (UTC). It protects your streak if you miss a day. Unused passes do not roll over."
-                      : "You get 3 lazy passes at the start of each calendar month (UTC). They protect your streak if you miss a day. Unused passes do not roll over."
-                  )
+                  setInfoModal({
+                    title: "Lazy pass",
+                    body: billingPeriod === "weekly"
+                      ? "Your weekly plan includes 1 Lazy Pass each calendar week (UTC). Use it to protect your streak if you miss a day. Unused passes expire when the week resets."
+                      : "Your plan includes 3 Lazy Passes at the start of each calendar month (UTC). Use them to protect your streak if you miss a day. Unused passes expire when the month resets.",
+                  })
                 }
               >
                 <Text style={s.lazyPassRefillBtnText}>Info</Text>
@@ -5193,7 +5307,7 @@ export default function HomeScreen() {
                     >
                       <Text style={{ fontSize: 30 }}>🍦</Text>
                     </View>
-                    <Text style={s.lazyPassItemLabel}>
+                    <Text style={[s.lazyPassItemLabel, !included && { color: C.mutedFg }]}>
                       {!included ? "Not included" : ready ? "Ready" : "Spent"}
                     </Text>
                   </View>
@@ -5581,6 +5695,81 @@ export default function HomeScreen() {
             }
           />
 
+          <Modal
+            visible={socialReferralSpotlightOpen}
+            transparent
+            animationType="fade"
+            onRequestClose={() => void dismissSocialReferralSpotlight()}
+          >
+            <View style={s.referralSpotlightBackdrop}>
+              <View style={s.referralSpotlightCard}>
+                <Pressable
+                  style={s.referralSpotlightClose}
+                  onPress={() => void dismissSocialReferralSpotlight()}
+                  accessibilityRole="button"
+                  accessibilityLabel="Dismiss referral reward information"
+                >
+                  <MaterialIcons name="close" size={22} color={C.black} />
+                </Pressable>
+
+                <View style={s.referralSpotlightHeroIcon}>
+                  <MaterialIcons name="group-add" size={42} color={C.black} />
+                </View>
+                <Text style={s.referralSpotlightEyebrow}>INVITE REWARD</Text>
+                <Text style={s.referralSpotlightTitle}>YOU BOTH WIN</Text>
+                <Text style={s.referralSpotlightBody}>
+                  Invite a new friend to Volt. When they complete their first activity, the same reward lands in both accounts.
+                </Text>
+
+                <View style={s.referralSpotlightRewards}>
+                  <View style={[s.referralSpotlightRewardCard, { backgroundColor: C.electricYellowLight }]}>
+                    <CoinIcon size={36} />
+                    <Text selectable style={s.referralSpotlightRewardValue}>+100</Text>
+                    <Text style={s.referralSpotlightRewardLabel}>COINS EACH</Text>
+                  </View>
+                  <View style={[s.referralSpotlightRewardCard, { backgroundColor: C.mintLight }]}>
+                    <View style={s.referralSpotlightPassIcon}>
+                      <MaterialIcons name="ac-unit" size={28} color={C.black} />
+                    </View>
+                    <Text selectable style={s.referralSpotlightRewardValue}>+1</Text>
+                    <Text style={s.referralSpotlightRewardLabel}>LAZY PASS EACH</Text>
+                  </View>
+                </View>
+
+                <View style={s.referralSpotlightSteps}>
+                  <Text style={s.referralSpotlightStep}>1. Share your code</Text>
+                  <MaterialIcons name="arrow-forward" size={16} color={C.mutedFg} />
+                  <Text style={s.referralSpotlightStep}>2. Friend joins</Text>
+                  <MaterialIcons name="arrow-forward" size={16} color={C.mutedFg} />
+                  <Text style={s.referralSpotlightStep}>3. First activity</Text>
+                </View>
+
+                <Pressable
+                  style={s.referralSpotlightPrimary}
+                  onPress={async () => {
+                    await dismissSocialReferralSpotlight();
+                    await shareReferralInvite();
+                  }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Share your Volt referral code"
+                >
+                  <MaterialIcons name="share" size={20} color={C.white} />
+                  <Text style={s.referralSpotlightPrimaryText}>SHARE INVITE</Text>
+                </Pressable>
+                <Pressable
+                  style={s.referralSpotlightSecondary}
+                  onPress={() => void dismissSocialReferralSpotlight()}
+                  accessibilityRole="button"
+                >
+                  <Text style={s.referralSpotlightSecondaryText}>MAYBE LATER</Text>
+                </Pressable>
+                <Text style={s.referralSpotlightFootnote}>
+                  Reward applies to new friends and unlocks after their first completed activity.
+                </Text>
+              </View>
+            </View>
+          </Modal>
+
           <Modal visible={addFriendModalOpen} transparent animationType="slide" onRequestClose={() => setAddFriendModalOpen(false)}>
             <Pressable
               style={s.addFriendBackdrop}
@@ -5593,6 +5782,9 @@ export default function HomeScreen() {
                 <Pressable style={[s.addFriendSheet, { paddingBottom: Math.max(insets.bottom, 16) + 16 }]} onPress={() => undefined}>
                   <Text style={s.addFriendTitle}>Add Friends</Text>
                   <Text style={s.addFriendSubtitle}>Share your code or enter a friend&apos;s code</Text>
+                  <Text style={s.addFriendReferralText}>
+                    After a new friend completes their first activity, you both earn 100 coins and 1 Lazy Pass.
+                  </Text>
 
                   <View style={s.addFriendCodeCard}>
                     <Text style={s.addFriendCodeLabel}>Your Code</Text>
@@ -5600,14 +5792,7 @@ export default function HomeScreen() {
                       {(myFriendCode ?? "------").split("").join(" ")}
                     </Text>
                     <Pressable
-                      onPress={async () => {
-                        try {
-                          const code = myFriendCode ?? await generateFriendCode();
-                          if (code) await Share.share({ message: `Add me on Volt! My friend code is: ${code}` });
-                        } catch (error) {
-                          Alert.alert("Could not share", error instanceof Error ? error.message : "Try again.");
-                        }
-                      }}
+                      onPress={() => void shareReferralInvite()}
                       style={s.addFriendShare}
                     >
                       <MaterialIcons name="share" size={14} color={C.white} />
@@ -5644,7 +5829,12 @@ export default function HomeScreen() {
                         }
                         try {
                           const result = await addFriendByCode({ code: friendCodeInput });
-                          Alert.alert("Friend Added!", `You and ${result.friendName} are now friends!`);
+                          Alert.alert(
+                            "Friend Added!",
+                            result.referralEligible
+                              ? `You and ${result.friendName} are now friends. Complete your first activity to unlock ${result.rewardCoins} coins and ${result.rewardFreezes} Lazy Pass for both of you.`
+                              : `You and ${result.friendName} are now friends!`,
+                          );
                           setFriendCodeInput("");
                           setAddFriendModalOpen(false);
                         } catch (error) {
@@ -6382,10 +6572,10 @@ export default function HomeScreen() {
       void Share.share({ message: "Volt feature suggestion: " });
       return;
     }
-    Alert.alert(
-      "Help & FAQ",
-      "Earn VP, coins and scroll minutes by completing verified activities. Use Edit under Shielded Apps to change which apps Volt protects.",
-    );
+    setInfoModal({
+      title: "Help & FAQ",
+      body: "Earn VP, coins and scroll minutes by completing verified activities. Use Edit under Shielded Apps to change which apps Volt protects.",
+    });
   };
 
   const handleProfileSignOut = () => {
@@ -6398,6 +6588,7 @@ export default function HomeScreen() {
   return (
     <View style={s.screenBg}>
       <StatusBar style="dark" />
+      {appInfoModal}
       <ScrollView
         contentContainerStyle={[s.profileFigmaScroll, { paddingTop: insets.top + 8, paddingBottom: contentPad }]}
         showsVerticalScrollIndicator={false}
@@ -6828,15 +7019,22 @@ const s = StyleSheet.create({
   rewardStatsRow: { flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 8 },
   rewardStat: { backgroundColor: C.electricYellowLight, borderWidth: 2, borderColor: C.black, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 6, fontSize: 13, fontWeight: "900", color: C.black },
   rewardBonus: { width: "100%", backgroundColor: C.mintLight, borderRadius: 12, padding: 10, textAlign: "center", fontSize: 12, fontWeight: "800", color: C.black },
+  rewardReferralBonus: { width: "100%", backgroundColor: C.electricYellowLight, borderWidth: 1.5, borderColor: C.black, borderRadius: 12, padding: 10, textAlign: "center", fontSize: 12, lineHeight: 17, fontWeight: "900", color: C.black },
+  rewardShareCta: { width: "100%", height: 44, borderRadius: 22, backgroundColor: C.mint, borderWidth: 2, borderColor: C.black, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 7, ...SH2 },
+  rewardShareCtaText: { fontSize: 13, fontWeight: "900", color: C.black },
+  rewardReviewCta: { width: "100%", height: 42, borderRadius: 21, backgroundColor: C.electricYellowLight, borderWidth: 1.5, borderColor: C.black, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6 },
+  rewardReviewCtaText: { fontSize: 12, fontWeight: "900", color: C.black },
   rewardCta: { width: "100%", height: 52, borderRadius: 26, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
   rewardCtaText: { fontSize: 15, fontWeight: "900", color: C.white },
-  dailyMissionCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: C.electricYellowLight, borderWidth: 2, borderColor: C.black, borderRadius: 18, padding: 14, ...SH4 },
-  dailyMissionIcon: { width: 46, height: 46, borderRadius: 14, backgroundColor: C.white, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center" },
-  dailyMissionTitle: { fontSize: 14, fontWeight: "900", textTransform: "uppercase", color: C.black },
-  dailyMissionSub: { fontSize: 10, fontWeight: "700", color: C.mutedFg, marginTop: 2 },
-  dailyMissionTrack: { height: 8, backgroundColor: C.white, borderWidth: 1, borderColor: C.black, borderRadius: 4, overflow: "hidden", marginTop: 7 },
-  dailyMissionFill: { height: "100%", backgroundColor: C.hotPink },
-  dailyMissionCount: { fontSize: 16, fontWeight: "900", color: C.black },
+  infoModalOverlay: { flex: 1, justifyContent: "flex-end" },
+  infoModalBackdrop: { position: "absolute", top: 0, right: 0, bottom: 0, left: 0, backgroundColor: "rgba(0,0,0,0.45)" },
+  infoModalCard: { backgroundColor: C.white, borderTopWidth: 3, borderColor: C.black, borderTopLeftRadius: 28, borderTopRightRadius: 28, paddingHorizontal: 24, paddingTop: 12, alignItems: "center", gap: 14, ...SH8 },
+  infoModalHandle: { width: 42, height: 5, borderRadius: 3, backgroundColor: C.muted },
+  infoModalIcon: { width: 54, height: 54, borderRadius: 18, backgroundColor: C.electricYellowLight, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
+  infoModalTitle: { fontSize: 22, fontWeight: "900", textTransform: "uppercase", color: C.black, textAlign: "center" },
+  infoModalBody: { width: "100%", fontSize: 14, lineHeight: 21, fontWeight: "600", color: C.mutedFg, textAlign: "center" },
+  infoModalCta: { width: "100%", height: 50, borderRadius: 25, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
+  infoModalCtaText: { fontSize: 14, fontWeight: "900", color: C.white, letterSpacing: 0.4 },
   pathMissionCard: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: C.mintLight, borderWidth: 2, borderColor: C.black, borderRadius: 18, padding: 14, ...SH4 },
   pathMissionBadge: { backgroundColor: C.mint, borderWidth: 1.5, borderColor: C.black, borderRadius: 8, paddingHorizontal: 7, paddingVertical: 4, fontSize: 9, fontWeight: "900", color: C.black },
   pathMissionTitle: { fontSize: 13, fontWeight: "900", textTransform: "uppercase", color: C.black },
@@ -8311,11 +8509,11 @@ const s = StyleSheet.create({
   lazyPassTitle: { fontSize: 20, fontWeight: "900", textTransform: "uppercase", letterSpacing: -1, color: C.black },
   lazyPassRefillBtn: { width: 64, height: 32, borderRadius: 100, backgroundColor: "#767373", borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
   lazyPassRefillBtnText: { fontSize: 12, fontWeight: "900", textTransform: "uppercase", color: C.white },
-  lazyPassActions: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 16 },
-  lazyPassItem: { width: 79, alignItems: "center", gap: 4 },
+  lazyPassActions: { flexDirection: "row", alignItems: "flex-start", justifyContent: "space-between", gap: 10 },
+  lazyPassItem: { flex: 1, alignItems: "center", gap: 4 },
   lazyPassIconWrap: { width: 64, height: 64, borderRadius: 16, backgroundColor: "#9EFFF5", borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH2 },
   lazyPassIcon: { width: 48, height: 48 },
-  lazyPassItemLabel: { fontSize: 14, fontWeight: "700", color: C.black, letterSpacing: -0.4 },
+  lazyPassItemLabel: { width: "100%", minHeight: 28, fontSize: 11, lineHeight: 14, fontWeight: "800", color: C.black, letterSpacing: -0.2, textAlign: "center" },
   streakCard: { flexDirection: "row", alignItems: "center", backgroundColor: C.electricYellowLight, borderWidth: 2, borderColor: C.black, borderRadius: 20, padding: 20, ...SH4 },
   streakCardTitle: { fontSize: 16, fontWeight: "900", textTransform: "uppercase", color: C.black },
   streakCardSub: { fontSize: 10, fontWeight: "700", textTransform: "uppercase", color: C.mutedFg },
@@ -8443,6 +8641,7 @@ const s = StyleSheet.create({
     ...SH2,
   },
   unlockCard: { flexDirection: "row", alignItems: "center", backgroundColor: C.white, borderWidth: 2, borderColor: C.black, borderRadius: 16, padding: 14, gap: 10, ...SH4 },
+  unlockCardLocked: { backgroundColor: "#F4F1F1", borderColor: C.muted },
   unlockTopRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   unlockBottomRow: { flexDirection: "row", alignItems: "center", gap: 10 },
   unlockIconCircle: { width: 64, height: 64, borderRadius: 32, borderWidth: 2, borderColor: C.black, alignItems: "center", justifyContent: "center", shadowColor: C.black, shadowOffset: { width: 2, height: 2 }, shadowOpacity: 1, shadowRadius: 0, elevation: 2 },
@@ -8452,8 +8651,10 @@ const s = StyleSheet.create({
   verifyBadgeText: { fontSize: 8, fontWeight: "800", textTransform: "uppercase", letterSpacing: 0.15, color: C.black },
   beastBadge: { backgroundColor: C.hotPink, borderWidth: 1, borderColor: C.black, borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, marginLeft: 4 },
   beastBadgeText: { fontSize: 8, fontWeight: "900", color: C.white },
-  goBtn: { backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, borderRadius: 100, width: 64, height: 32, alignItems: "center", justifyContent: "center", ...SH2 },
+  goBtn: { backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, borderRadius: 100, minWidth: 64, height: 32, paddingHorizontal: 8, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 2, ...SH2 },
+  goBtnLocked: { backgroundColor: C.muted, borderColor: C.mutedFg, boxShadow: "none" },
   goBtnText: { fontSize: 12, fontWeight: "800", textTransform: "uppercase", color: C.black },
+  goBtnTextLocked: { fontSize: 10, color: C.mutedFg },
   claimSection: { alignItems: "center", gap: 12, paddingVertical: 20 },
   claimLabel: { fontSize: 12, fontWeight: "900", fontStyle: "italic", letterSpacing: 2, color: C.mutedFg },
   claimBtn: { width: 88, height: 88, borderRadius: 44, backgroundColor: C.hotPink, borderWidth: 4, borderColor: C.black, alignItems: "center", justifyContent: "center", shadowColor: "#1A1A1A", shadowOffset: { width: 6, height: 6 }, shadowOpacity: 1, shadowRadius: 0, elevation: 6 },
@@ -8525,6 +8726,25 @@ const s = StyleSheet.create({
   socialPager: { height: 16, marginTop: 8, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 },
   socialPagerActive: { width: 28, height: 8, borderRadius: 4, backgroundColor: C.hotPink, borderWidth: 1, borderColor: C.black },
   socialPagerInactive: { width: 8, height: 8, borderRadius: 4, backgroundColor: C.white, borderWidth: 1, borderColor: C.black },
+  referralSpotlightBackdrop: { flex: 1, backgroundColor: "rgba(26,26,26,0.72)", alignItems: "center", justifyContent: "center", paddingHorizontal: 20, paddingVertical: 24 },
+  referralSpotlightCard: { width: "100%", maxWidth: 370, backgroundColor: C.white, borderWidth: 3, borderColor: C.black, borderRadius: 28, padding: 20, alignItems: "center", gap: 10, ...SH8 },
+  referralSpotlightClose: { position: "absolute", right: 14, top: 14, width: 36, height: 36, borderRadius: 18, backgroundColor: C.offWhite, borderWidth: 1.5, borderColor: C.black, alignItems: "center", justifyContent: "center", zIndex: 2 },
+  referralSpotlightHeroIcon: { width: 68, height: 68, borderRadius: 22, backgroundColor: C.electricYellow, borderWidth: 2.5, borderColor: C.black, alignItems: "center", justifyContent: "center", ...SH4 },
+  referralSpotlightEyebrow: { fontSize: 11, lineHeight: 14, fontWeight: "900", color: C.hotPink, letterSpacing: 1.8 },
+  referralSpotlightTitle: { fontSize: 28, lineHeight: 32, fontWeight: "900", color: C.black, textAlign: "center", letterSpacing: -0.8 },
+  referralSpotlightBody: { maxWidth: 310, fontSize: 13, lineHeight: 19, fontWeight: "700", color: C.mutedFg, textAlign: "center" },
+  referralSpotlightRewards: { width: "100%", flexDirection: "row", gap: 10 },
+  referralSpotlightRewardCard: { flex: 1, minHeight: 112, borderWidth: 2, borderColor: C.black, borderRadius: 18, paddingHorizontal: 10, paddingVertical: 12, alignItems: "center", justifyContent: "center", gap: 3 },
+  referralSpotlightPassIcon: { width: 38, height: 38, borderRadius: 12, backgroundColor: C.white, borderWidth: 1.5, borderColor: C.black, alignItems: "center", justifyContent: "center" },
+  referralSpotlightRewardValue: { fontSize: 25, lineHeight: 28, fontWeight: "900", color: C.black, fontVariant: ["tabular-nums"] },
+  referralSpotlightRewardLabel: { fontSize: 9, lineHeight: 12, fontWeight: "900", color: C.black, textAlign: "center", letterSpacing: 0.4 },
+  referralSpotlightSteps: { width: "100%", minHeight: 34, flexDirection: "row", alignItems: "center", justifyContent: "space-between", backgroundColor: C.offWhite, borderRadius: 12, paddingHorizontal: 10, paddingVertical: 7 },
+  referralSpotlightStep: { flex: 1, fontSize: 9, lineHeight: 12, fontWeight: "800", color: C.black, textAlign: "center" },
+  referralSpotlightPrimary: { width: "100%", height: 52, borderRadius: 26, backgroundColor: C.hotPink, borderWidth: 2, borderColor: C.black, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, ...SH4 },
+  referralSpotlightPrimaryText: { fontSize: 15, lineHeight: 18, fontWeight: "900", color: C.white, letterSpacing: 0.7 },
+  referralSpotlightSecondary: { height: 30, paddingHorizontal: 14, alignItems: "center", justifyContent: "center" },
+  referralSpotlightSecondaryText: { fontSize: 11, lineHeight: 14, fontWeight: "900", color: C.mutedFg, letterSpacing: 0.5 },
+  referralSpotlightFootnote: { maxWidth: 300, fontSize: 9, lineHeight: 13, fontWeight: "700", color: C.mutedFg, textAlign: "center" },
   addFriendBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.45)", justifyContent: "flex-end" },
   addFriendKeyboard: { width: "100%", justifyContent: "flex-end" },
   addFriendSheet: {
@@ -8540,7 +8760,8 @@ const s = StyleSheet.create({
     ...SH4,
   },
   addFriendTitle: { fontSize: 20, lineHeight: 24, fontWeight: "900", textTransform: "uppercase", color: C.black },
-  addFriendSubtitle: { fontSize: 14, lineHeight: 24, fontWeight: "500", color: C.mutedFg, marginBottom: 8 },
+  addFriendSubtitle: { fontSize: 14, lineHeight: 24, fontWeight: "500", color: C.mutedFg },
+  addFriendReferralText: { width: "100%", backgroundColor: C.electricYellowLight, borderRadius: 10, paddingHorizontal: 10, paddingVertical: 8, fontSize: 12, lineHeight: 17, fontWeight: "800", color: C.black, marginBottom: 8 },
   addFriendCodeCard: {
     width: "100%",
     backgroundColor: C.white,

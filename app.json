@@ -7,11 +7,18 @@
     "icon": "./assets/images/icon.png",
     "scheme": "test",
     "userInterfaceStyle": "automatic",
-    "ios": {
-      "appleTeamId": "27W785VCL2",
-      "deploymentTarget": "16.4",
-      "icon": "./assets/expo.icon",
-      "infoPlist": {
+      "ios": {
+        "appleTeamId": "27W785VCL2",
+        "deploymentTarget": "16.4",
+        "icon": "./assets/expo.icon",
+        "entitlements": {
+          "com.apple.developer.family-controls": true,
+          "com.apple.developer.family-controls.app-and-website-usage": true,
+          "com.apple.security.application-groups": [
+            "group.com.volt.screentime"
+          ]
+        },
+        "infoPlist": {
         "NSCameraUsageDescription": "Volt uses your camera to detect push-up and squat reps.",
         "NSMicrophoneUsageDescription": "Volt uses your microphone for voice notes and real-time coaching.",
         "NSLocationWhenInUseUsageDescription": "Volt tracks your walk/run to verify distance and reward you with Unlock Minutes.",
@@ -114,6 +121,7 @@
                   "targetName": "ShieldConfiguration",
                   "entitlements": {
                     "com.apple.developer.family-controls": true,
+                    "com.apple.developer.family-controls.app-and-website-usage": true,
                     "com.apple.security.application-groups": [
                       "group.com.volt.screentime"
                     ]
@@ -124,6 +132,7 @@
                   "targetName": "ShieldAction",
                   "entitlements": {
                     "com.apple.developer.family-controls": true,
+                    "com.apple.developer.family-controls.app-and-website-usage": true,
                     "com.apple.security.application-groups": [
                       "group.com.volt.screentime"
                     ]
@@ -134,6 +143,7 @@
                   "targetName": "ActivityMonitorExtension",
                   "entitlements": {
                     "com.apple.developer.family-controls": true,
+                    "com.apple.developer.family-controls.app-and-website-usage": true,
                     "com.apple.security.application-groups": [
                       "group.com.volt.screentime"
                     ]

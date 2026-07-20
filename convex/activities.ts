@@ -187,6 +187,10 @@ export const logActivity = mutation({
         q.eq("userId", userId).gte("_creationTime", startOfDay),
       )
       .collect();
+    const previousActivity = await ctx.db
+      .query("activities")
+      .withIndex("by_userId", (q) => q.eq("userId", userId))
+      .first();
 
     const limit = rule.dailyLimit;
     if (limit !== undefined) {
@@ -202,6 +206,14 @@ export const logActivity = mutation({
       .unique();
 
     if (!profile) throw new Error("Profile not found");
+    const pendingReferral = !previousActivity
+      ? await ctx.db
+          .query("referrals")
+          .withIndex("by_invitedUserId_status", (q) =>
+            q.eq("invitedUserId", userId).eq("status", "accepted"),
+          )
+          .first()
+      : null;
 
     const difficulty = profile.difficultyLevel === "beast"
       ? "beast"
@@ -311,14 +323,100 @@ export const logActivity = mutation({
     });
     await addWeeklyScore(ctx, userId, totalDpEarned, profile.league ?? "bronze");
 
+    const now = Date.now();
+    await ctx.db.insert("growthEvents", {
+      userId,
+      name: "activity_completed",
+      occurredAt: now,
+      properties: {
+        activityType: args.type,
+        currentStreak: newStreak,
+        minutesEarned: reward.minutes,
+      },
+    });
+    if (!previousActivity) {
+      await ctx.db.insert("growthEvents", {
+        userId,
+        name: "first_activity_completed",
+        occurredAt: now,
+        properties: {
+          activityType: args.type,
+          currentStreak: newStreak,
+          minutesEarned: reward.minutes,
+        },
+      });
+    }
+
+    let referralActivated = false;
+    let referralBonusCoins = 0;
+    let referralBonusFreezes = 0;
+    if (pendingReferral) {
+      const inviterProfile = await ctx.db
+        .query("profiles")
+        .withIndex("by_userId", (q) =>
+          q.eq("userId", pendingReferral.inviterUserId),
+        )
+        .unique();
+      if (inviterProfile) {
+        referralActivated = true;
+        referralBonusCoins = pendingReferral.rewardCoins;
+        referralBonusFreezes = pendingReferral.rewardFreezes;
+
+        await ctx.db.patch(profile._id, {
+          coinBalance:
+            (profile.coinBalance ?? 0) +
+            totalCoinsEarned +
+            referralBonusCoins,
+          freezesRemaining: Math.min(
+            5,
+            newFreezesRemaining + referralBonusFreezes,
+          ),
+        });
+        await ctx.db.patch(inviterProfile._id, {
+          coinBalance:
+            (inviterProfile.coinBalance ?? 0) + referralBonusCoins,
+          freezesRemaining: Math.min(
+            5,
+            inviterProfile.freezesRemaining + referralBonusFreezes,
+          ),
+        });
+        await ctx.db.patch(pendingReferral._id, {
+          status: "activated",
+          activatedAt: now,
+        });
+        await ctx.db.insert("growthEvents", {
+          userId,
+          name: "referral_activated",
+          occurredAt: now,
+          properties: {
+            activityType: args.type,
+            value: referralBonusCoins,
+          },
+        });
+        await ctx.db.insert("growthEvents", {
+          userId: pendingReferral.inviterUserId,
+          name: "referral_rewarded",
+          occurredAt: now,
+          properties: {
+            value: referralBonusCoins,
+          },
+        });
+      }
+    }
+
     return {
       minutesEarned: reward.minutes,
       vpEarned: reward.vp,
-      coinsEarned: totalCoinsEarned,
+      coinsEarned: totalCoinsEarned + referralBonusCoins,
       missionCount: Math.min(3, missionCount),
       dailyQuestCompleted,
       completedNodeLabel,
       nodeDp,
+      currentStreak: newStreak,
+      isFirstActivity: !previousActivity,
+      referralActivated,
+      referralBonusCoins,
+      referralBonusFreezes,
     };
   },
 });

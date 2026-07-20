@@ -12,7 +12,7 @@ const balanced = {
   difficulty: "balanced",
 };
 
-assert.equal(Object.keys(ACTIVITY_RULES).length, 27, "26 activities plus Coin Run must be configured");
+assert.equal(Object.keys(ACTIVITY_RULES).length, 61, "60 Figma activities plus Coin Run must be configured");
 assert.equal(dailyFuelBudget(balanced), 60, "cut-in-half target should create a 60 minute budget");
 assert.equal(DIFFICULTY_EFFORT_MULT.chill, 0.7);
 assert.equal(DIFFICULTY_EFFORT_MULT.beast, 1.3);

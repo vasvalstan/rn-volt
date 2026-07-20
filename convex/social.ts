@@ -12,6 +12,8 @@ function generateCode(): string {
 }
 
 const FRIEND_CODE_PATTERN = /^[A-HJ-NP-Z2-9]{6}$/;
+const REFERRAL_REWARD_COINS = 100;
+const REFERRAL_REWARD_FREEZES = 1;
 
 // ─── FRIEND CODE ─────────────────────────────────────
 
@@ -113,7 +115,63 @@ export const addFriendByCode = mutation({
       status: "accepted",
     });
 
-    return { friendName: friendProfile.displayName };
+    const [priorActivity, existingReferral] = await Promise.all([
+      ctx.db
+        .query("activities")
+        .withIndex("by_userId", (q) => q.eq("userId", userId))
+        .first(),
+      ctx.db
+        .query("referrals")
+        .withIndex("by_invitedUserId", (q) => q.eq("invitedUserId", userId))
+        .first(),
+    ]);
+    const referralEligible = !priorActivity && !existingReferral;
+    const now = Date.now();
+
+    await ctx.db.insert("growthEvents", {
+      userId,
+      name: "friend_added",
+      occurredAt: now,
+      properties: {
+        screen: "social",
+      },
+    });
+
+    if (referralEligible) {
+      await ctx.db.insert("referrals", {
+        inviterUserId: friendProfile.userId,
+        invitedUserId: userId,
+        friendCode: normalized,
+        status: "accepted",
+        acceptedAt: now,
+        rewardCoins: REFERRAL_REWARD_COINS,
+        rewardFreezes: REFERRAL_REWARD_FREEZES,
+      });
+      await ctx.db.insert("growthEvents", {
+        userId,
+        name: "referral_accepted",
+        occurredAt: now,
+        properties: {
+          screen: "social",
+          value: REFERRAL_REWARD_COINS,
+        },
+      });
+      await ctx.db.insert("growthEvents", {
+        userId: friendProfile.userId,
+        name: "referral_invite_accepted",
+        occurredAt: now,
+        properties: {
+          value: REFERRAL_REWARD_COINS,
+        },
+      });
+    }
+
+    return {
+      friendName: friendProfile.displayName,
+      referralEligible,
+      rewardCoins: referralEligible ? REFERRAL_REWARD_COINS : 0,
+      rewardFreezes: referralEligible ? REFERRAL_REWARD_FREEZES : 0,
+    };
   },
 });
 

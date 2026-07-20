@@ -43,13 +43,13 @@ const PERSONA_MAPS: Record<string, MapNodeDef[]> = {
   fitness_beginner: [
     { label: "Easy Walk", activityKeys: ["run"], dp: 30, nodeType: "regular", desc: "Walk 300m to warm up" },
     { label: "First Push", activityKeys: ["pushups"], dp: 20, nodeType: "regular", desc: "5 push-ups" },
-    { label: "Stretch Break", activityKeys: ["stretch"], dp: 15, nodeType: "rest", desc: "15 sec full body stretch" },
-    { label: "Short Shuffle", activityKeys: ["run"], dp: 28, nodeType: "regular", desc: "Easy jog or brisk walk 200m" },
+    { label: "Core Start", activityKeys: ["crunches"], dp: 15, nodeType: "rest", desc: "10 controlled crunches" },
+    { label: "Glute Base", activityKeys: ["glutebridge"], dp: 28, nodeType: "regular", desc: "10 glute bridges" },
     { label: "Runner's Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-    { label: "Hydrate & Breathe", activityKeys: ["water", "breathe"], dp: 25, nodeType: "regular", desc: "Drink water + 2 min breathwork" },
-    { label: "Neighborhood Walk", activityKeys: ["run"], dp: 45, nodeType: "regular", desc: "Walk 400m" },
-    { label: "Squat Set", activityKeys: ["squats"], dp: 25, nodeType: "regular", desc: "10 squats" },
-    { label: "Cool-down Lap", activityKeys: ["run", "stretch"], dp: 40, nodeType: "regular", desc: "Walk 300m + stretch" },
+    { label: "Power Cardio", activityKeys: ["mountainclimber", "highkneerun"], dp: 25, nodeType: "regular", desc: "Mountain climbers + high knees" },
+    { label: "Strength Flow", activityKeys: ["sumosquats", "lunges"], dp: 45, nodeType: "regular", desc: "Sumo squats + lunges" },
+    { label: "Balance Hold", activityKeys: ["forearmplank", "sideplank"], dp: 25, nodeType: "regular", desc: "Forearm plank + side plank" },
+    { label: "Mobility Finish", activityKeys: ["legstretch", "forwardfold"], dp: 40, nodeType: "regular", desc: "Leg stretch + forward fold" },
     { label: "Boss: Foundation", activityKeys: ["run", "pushups", "squats"], dp: 200, nodeType: "boss", desc: "Walk 400m + 5 push-ups + 10 squats" },
   ],
   /** Get Moving + decent: more running volume & combos */
@@ -59,47 +59,47 @@ const PERSONA_MAPS: Record<string, MapNodeDef[]> = {
     { label: "Tempo Legs", activityKeys: ["squats"], dp: 32, nodeType: "regular", desc: "15 squats" },
     { label: "Steady K", activityKeys: ["run"], dp: 55, nodeType: "regular", desc: "Run or run/walk 1 km" },
     { label: "Runner's Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-    { label: "Power Cardio", activityKeys: ["jumpingjacks", "plank"], dp: 45, nodeType: "regular", desc: "20 jumping jacks + 20s plank" },
-    { label: "Distance Builder", activityKeys: ["run"], dp: 70, nodeType: "regular", desc: "Cover 1.5 km your pace" },
-    { label: "Wall & Recover", activityKeys: ["wallsit", "water"], dp: 30, nodeType: "regular", desc: "Wall sit 20s + hydrate" },
-    { label: "Interval Mix", activityKeys: ["run", "breathe"], dp: 50, nodeType: "regular", desc: "800m + 3 min breathwork" },
-    { label: "Boss: Runner's Test", activityKeys: ["run", "pushups", "squats"], dp: 220, nodeType: "boss", desc: "1 km + 10 push-ups + 15 squats" },
+    { label: "Power Cardio", activityKeys: ["jumpingjacks", "mountainclimber"], dp: 45, nodeType: "regular", desc: "Jumping jacks + mountain climbers" },
+    { label: "Core Builder", activityKeys: ["bicyclecrunches", "scissorkicks"], dp: 70, nodeType: "regular", desc: "Bicycle crunches + scissors kicks" },
+    { label: "Lateral Strength", activityKeys: ["lunges", "sidelunges"], dp: 30, nodeType: "regular", desc: "Lunges + side lunges" },
+    { label: "Mobility Flow", activityKeys: ["legstretch", "sidestretch"], dp: 50, nodeType: "regular", desc: "Leg stretch + side stretch" },
+    { label: "Boss: Runner's Test", activityKeys: ["run", "pushups", "squats", "forearmplank"], dp: 220, nodeType: "boss", desc: "1 km + push-ups + squats + plank" },
   ],
   focus: [
     { label: "Screen Reset", activityKeys: ["eyesclosed"], dp: 15, nodeType: "regular", desc: "Close eyes for 10 sec" },
-    { label: "Focus Breath", activityKeys: ["breathe"], dp: 20, nodeType: "regular", desc: "3 min breathwork" },
-    { label: "Quick Push", activityKeys: ["pushups"], dp: 20, nodeType: "rest", desc: "5 push-ups to reset" },
+    { label: "Box Breathing", activityKeys: ["boxbreathing"], dp: 20, nodeType: "regular", desc: "5 min box breathing" },
+    { label: "Eye Reset", activityKeys: ["eyegymnastics"], dp: 20, nodeType: "rest", desc: "Eye gymnastics to reset your attention" },
     { label: "Attention Test", activityKeys: ["focusdot"], dp: 15, nodeType: "regular", desc: "Focus dot challenge" },
     { label: "Shield Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-    { label: "Break & Breathe", activityKeys: ["leaveroom", "breathe"], dp: 30, nodeType: "regular", desc: "Leave the room + breathwork" },
-    { label: "Mindful Move", activityKeys: ["stretch", "eyesclosed"], dp: 25, nodeType: "regular", desc: "Stretch + eyes closed" },
-    { label: "Gratitude Pause", activityKeys: ["gratitude"], dp: 15, nodeType: "regular", desc: "Write 3 things you're grateful for" },
-    { label: "Deep Focus", activityKeys: ["focusdot", "breathe"], dp: 30, nodeType: "regular", desc: "Focus dot + 3 min breathwork" },
-    { label: "Boss: Digital Detox", activityKeys: ["eyesclosed", "leaveroom", "breathe"], dp: 200, nodeType: "boss", desc: "Eyes closed + leave room + breathe" },
+    { label: "Window Grounding", activityKeys: ["windowobserve", "grounding"], dp: 30, nodeType: "regular", desc: "Observe outside + ground in the present" },
+    { label: "Face & Body Reset", activityKeys: ["facemassage", "selfhugging"], dp: 25, nodeType: "regular", desc: "Face massage + self-hug" },
+    { label: "Doodle Break", activityKeys: ["doodle"], dp: 15, nodeType: "regular", desc: "Doodle instead of scrolling" },
+    { label: "Daily Reflection", activityKeys: ["reflectday", "questionday"], dp: 30, nodeType: "regular", desc: "Reflect on the day + answer a question" },
+    { label: "Boss: Digital Detox", activityKeys: ["eyesclosed", "leaveroom", "callafriend"], dp: 200, nodeType: "boss", desc: "Eyes closed + leave room + call a friend" },
   ],
   discipline: [
-    { label: "First Rep", activityKeys: ["pushups"], dp: 20, nodeType: "regular", desc: "10 push-ups" },
-    { label: "Make the Plan", activityKeys: ["planday"], dp: 15, nodeType: "regular", desc: "Write your #1 task" },
-    { label: "Hydrate", activityKeys: ["water"], dp: 10, nodeType: "rest", desc: "Drink a glass of water" },
-    { label: "Squat Set", activityKeys: ["squats"], dp: 30, nodeType: "regular", desc: "15 squats" },
+    { label: "Light a Candle", activityKeys: ["lightcandle"], dp: 20, nodeType: "regular", desc: "Light a candle and pause" },
+    { label: "Read a Page", activityKeys: ["readapage"], dp: 15, nodeType: "regular", desc: "Read one page" },
+    { label: "Make the Plan", activityKeys: ["planday"], dp: 10, nodeType: "rest", desc: "Write your #1 task" },
+    { label: "Eat a Fruit", activityKeys: ["eatafruit"], dp: 30, nodeType: "regular", desc: "Eat one piece of fruit" },
     { label: "Discipline Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-    { label: "Full Stack", activityKeys: ["pushups", "squats"], dp: 50, nodeType: "regular", desc: "10 push-ups + 15 squats" },
-    { label: "Walk & Plan", activityKeys: ["run", "planday"], dp: 40, nodeType: "regular", desc: "Walk 300m + plan your day" },
-    { label: "Hold the Line", activityKeys: ["plank", "wallsit"], dp: 50, nodeType: "regular", desc: "Plank 20s + wall sit 20s" },
-    { label: "Kind & Strong", activityKeys: ["kindact", "jumpingjacks"], dp: 35, nodeType: "regular", desc: "Do a kind act + 20 jumping jacks" },
-    { label: "Boss: Iron Routine", activityKeys: ["pushups", "squats", "plank", "water"], dp: 200, nodeType: "boss", desc: "Push-ups + squats + plank + hydrate" },
+    { label: "Declutter Drawer", activityKeys: ["declutterdrawer"], dp: 50, nodeType: "regular", desc: "Clear one drawer" },
+    { label: "Grocery List", activityKeys: ["grocerylist"], dp: 40, nodeType: "regular", desc: "Write your grocery list" },
+    { label: "Plan Menu", activityKeys: ["planmenu"], dp: 50, nodeType: "regular", desc: "Plan a simple menu" },
+    { label: "Clean & Sweep", activityKeys: ["cleanmirror", "sweepfloor"], dp: 35, nodeType: "regular", desc: "Clean a mirror + sweep the floor" },
+    { label: "Boss: Daily Reset", activityKeys: ["planday", "grocerylist", "planmenu", "kindact"], dp: 200, nodeType: "boss", desc: "Plan your day + groceries + menu + kind act" },
   ],
   calm: [
     { label: "First Breath", activityKeys: ["breathe"], dp: 20, nodeType: "regular", desc: "3 min breathwork" },
     { label: "Grateful Heart", activityKeys: ["gratitude"], dp: 15, nodeType: "regular", desc: "Write 3 things you're grateful for" },
-    { label: "Gentle Stretch", activityKeys: ["stretch"], dp: 15, nodeType: "rest", desc: "15 sec stretch" },
+    { label: "Box Breathing", activityKeys: ["boxbreathing"], dp: 15, nodeType: "rest", desc: "5 min box breathing" },
     { label: "Screen Pause", activityKeys: ["eyesclosed", "leaveroom"], dp: 20, nodeType: "regular", desc: "Eyes closed + leave the room" },
     { label: "Calm Chest", activityKeys: [], dp: 100, nodeType: "chest", desc: "Open for a surprise" },
-    { label: "Kindness Walk", activityKeys: ["kindact", "run"], dp: 40, nodeType: "regular", desc: "Do a kind act + walk 300m" },
-    { label: "Focus Flow", activityKeys: ["focusdot", "breathe"], dp: 25, nodeType: "regular", desc: "Focus dot + breathwork" },
-    { label: "Body Calm", activityKeys: ["stretch", "water"], dp: 20, nodeType: "regular", desc: "Stretch + drink water" },
-    { label: "Deep Gratitude", activityKeys: ["gratitude", "breathe"], dp: 30, nodeType: "regular", desc: "Gratitude + breathwork" },
-    { label: "Boss: Inner Peace", activityKeys: ["breathe", "gratitude", "stretch", "eyesclosed"], dp: 200, nodeType: "boss", desc: "Breathwork + gratitude + stretch + eyes closed" },
+    { label: "Grounding Walk", activityKeys: ["grounding", "mindfulwalk"], dp: 40, nodeType: "regular", desc: "Grounding + mindful walk" },
+    { label: "Smile & Self-Hug", activityKeys: ["smile", "selfhugging"], dp: 25, nodeType: "regular", desc: "Smile + self-hug" },
+    { label: "Goals & Affirmations", activityKeys: ["visualizegoals", "positiveaffirmations"], dp: 20, nodeType: "regular", desc: "Visualize goals + affirmations" },
+    { label: "Hum & Tap", activityKeys: ["humsinging", "bodytap"], dp: 30, nodeType: "regular", desc: "Hum + body tap" },
+    { label: "Boss: Inner Peace", activityKeys: ["breathe", "gratitude", "grounding", "boxbreathing"], dp: 200, nodeType: "boss", desc: "Breathwork + gratitude + grounding + box breathing" },
   ],
 };
 
@@ -135,12 +135,6 @@ export const generateTrainingMap = mutation({
       .query("mapProgress")
       .withIndex("by_userId", (q) => q.eq("userId", userId))
       .collect();
-
-    // Existing accounts may already have the original 10-node map. Let the
-    // idempotent upsert below expand those accounts to the full 30-day path.
-    const alreadyHasThirtyDayMap =
-      existing.length >= 30 && existing.every((node) => Boolean(node.label));
-    if (alreadyHasThirtyDayMap) return;
 
     const profile = await ctx.db
       .query("profiles")
